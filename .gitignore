@@ -1,0 +1,14 @@
+# Build outputs
+/build/
+/bin/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Node (for future JS test harness)
+node_modules/
+dist/
+*.log
