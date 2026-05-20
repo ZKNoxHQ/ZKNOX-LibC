@@ -20,7 +20,15 @@
 
 #define ZKN_CHECK(call) do { int _rc = (call); if (_rc != 0) return _rc; } while(0)
 
+#ifndef ZKN_OK
+#define ZKN_OK 0
+#endif
+#ifndef ZKN_INVALID_PARAM
+#define ZKN_INVALID_PARAM (-1)
+#endif
+#ifndef ZKN_NOT_INITIALIZED
 #define ZKN_NOT_INITIALIZED (-10)
+#endif
 
 /* ══════════════════════════════════════════════════════════════════════
  *  Portable bswap64 (replaces Ledger SDK rev64)
