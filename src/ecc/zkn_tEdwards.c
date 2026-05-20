@@ -592,8 +592,21 @@ int tEdwards_2MSM_precomp_table(zkn_edcurve_t *curve,
     goto cleanup;
   }
 
+  /* coronize table points T[1..3] into byte arrays */
+  uint8_t CT_x[4][32], CT_y[4][32], CT_z[4][32];
   zkn_edpoint_t Tsel;
   ZKN_CHECK(tEdwards_alloc(curve, &Tsel));
+  for (uint8_t i = 1; i < 4; i++)
+  {
+    ZKN_CHECK(zkn_bn_init(Tsel.x, T_mx[i], curve->fieldsize8));
+    ZKN_CHECK(zkn_bn_init(Tsel.y, T_my[i], curve->fieldsize8));
+    ZKN_CHECK(zkn_bn_copy(Tsel.z, curve->mont_One));
+    ZKN_CHECK(tEdwards_Coronize(curve, &Tsel));
+    ZKN_CHECK(zkn_bn_export(Tsel.x, CT_x[i], curve->fieldsize8));
+    ZKN_CHECK(zkn_bn_export(Tsel.y, CT_y[i], curve->fieldsize8));
+    ZKN_CHECK(zkn_bn_export(Tsel.z, CT_z[i], curve->fieldsize8));
+  }
+
   /* main Shamir loop */
   while (pos >= 0)
   {
@@ -606,9 +619,9 @@ int tEdwards_2MSM_precomp_table(zkn_edcurve_t *curve,
     {
       if (sel != 0)
       {
-        ZKN_CHECK(zkn_bn_init(R->x, T_mx[sel], curve->fieldsize8));
-        ZKN_CHECK(zkn_bn_init(R->y, T_my[sel], curve->fieldsize8));
-        ZKN_CHECK(zkn_bn_copy(R->z, curve->mont_One));
+        ZKN_CHECK(zkn_bn_init(R->x, CT_x[sel], curve->fieldsize8));
+        ZKN_CHECK(zkn_bn_init(R->y, CT_y[sel], curve->fieldsize8));
+        ZKN_CHECK(zkn_bn_init(R->z, CT_z[sel], curve->fieldsize8));
         initialized = true;
       }
       pos--;
@@ -619,10 +632,10 @@ int tEdwards_2MSM_precomp_table(zkn_edcurve_t *curve,
 
     if (sel != 0)
     {
-      ZKN_CHECK(zkn_bn_init(Tsel.x, T_mx[sel], curve->fieldsize8));
-      ZKN_CHECK(zkn_bn_init(Tsel.y, T_my[sel], curve->fieldsize8));
-      ZKN_CHECK(zkn_bn_copy(Tsel.z, curve->mont_One));
-      ZKN_CHECK(tEdwards_add_affine(curve, R, &Tsel, R));
+      ZKN_CHECK(zkn_bn_init(Tsel.x, CT_x[sel], curve->fieldsize8));
+      ZKN_CHECK(zkn_bn_init(Tsel.y, CT_y[sel], curve->fieldsize8));
+      ZKN_CHECK(zkn_bn_init(Tsel.z, CT_z[sel], curve->fieldsize8));
+      ZKN_CHECK(tEdwards_add(curve, R, &Tsel, R));
     }
 
     pos--;
@@ -728,8 +741,20 @@ int tEdwards_4MSM_precomp_table(zkn_edcurve_t *curve,
     goto cleanup;
   }
 
+  /* coronize table points T[1..15] into byte arrays */
+  uint8_t CT_x[16][32], CT_y[16][32], CT_z[16][32];
   zkn_edpoint_t Tsel;
   ZKN_CHECK(tEdwards_alloc(curve, &Tsel));
+  for (uint8_t i = 1; i < 16; i++)
+  {
+    ZKN_CHECK(zkn_bn_init(Tsel.x, T_mx[i], curve->fieldsize8));
+    ZKN_CHECK(zkn_bn_init(Tsel.y, T_my[i], curve->fieldsize8));
+    ZKN_CHECK(zkn_bn_copy(Tsel.z, curve->mont_One));
+    ZKN_CHECK(tEdwards_Coronize(curve, &Tsel));
+    ZKN_CHECK(zkn_bn_export(Tsel.x, CT_x[i], curve->fieldsize8));
+    ZKN_CHECK(zkn_bn_export(Tsel.y, CT_y[i], curve->fieldsize8));
+    ZKN_CHECK(zkn_bn_export(Tsel.z, CT_z[i], curve->fieldsize8));
+  }
 
   /* main Shamir loop */
   while (pos >= 0)
@@ -748,9 +773,9 @@ int tEdwards_4MSM_precomp_table(zkn_edcurve_t *curve,
     {
       if (sel != 0)
       {
-        ZKN_CHECK(zkn_bn_init(R->x, T_mx[sel], curve->fieldsize8));
-        ZKN_CHECK(zkn_bn_init(R->y, T_my[sel], curve->fieldsize8));
-        ZKN_CHECK(zkn_bn_copy(R->z, curve->mont_One));
+        ZKN_CHECK(zkn_bn_init(R->x, CT_x[sel], curve->fieldsize8));
+        ZKN_CHECK(zkn_bn_init(R->y, CT_y[sel], curve->fieldsize8));
+        ZKN_CHECK(zkn_bn_init(R->z, CT_z[sel], curve->fieldsize8));
         initialized = true;
       }
       pos--;
@@ -761,10 +786,10 @@ int tEdwards_4MSM_precomp_table(zkn_edcurve_t *curve,
 
     if (sel != 0)
     {
-      ZKN_CHECK(zkn_bn_init(Tsel.x, T_mx[sel], curve->fieldsize8));
-      ZKN_CHECK(zkn_bn_init(Tsel.y, T_my[sel], curve->fieldsize8));
-      ZKN_CHECK(zkn_bn_copy(Tsel.z, curve->mont_One));
-      ZKN_CHECK(tEdwards_add_affine(curve, R, &Tsel, R));
+      ZKN_CHECK(zkn_bn_init(Tsel.x, CT_x[sel], curve->fieldsize8));
+      ZKN_CHECK(zkn_bn_init(Tsel.y, CT_y[sel], curve->fieldsize8));
+      ZKN_CHECK(zkn_bn_init(Tsel.z, CT_z[sel], curve->fieldsize8));
+      ZKN_CHECK(tEdwards_add(curve, R, &Tsel, R));
     }
 
     pos--;
