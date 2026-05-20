@@ -1,5 +1,18 @@
 # zknox-libc status
 
+## What works (v0.2.1)
+
+### v0.2.1 — Critical comment fix
+
+* `src/bn/zkn_bn.h` line 24: a `*/` inside a block comment was prematurely
+  closing the comment, causing the compiler to try parsing the text that
+  followed as C code. This produced cryptic errors like
+  "error: unknown type name 'cx_mont_'" and Unicode character errors when
+  the same file was consumed via submodule by the Ledger app build.
+  The fix: replaced `cx_bn_*/cx_mont_*` with `cx_bn_ and cx_mont_` in the
+  comment text. Audited entire codebase: no other instances of the same
+  bug.
+
 ## What works (v0.2.0)
 
 ### v0.2.0 — Aligned with ZKN-NANOBOX main branch

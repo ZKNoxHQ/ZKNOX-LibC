@@ -21,7 +21,7 @@
 
 #if defined(ZKN_BN_BACKEND_LEDGER)
 /* ───────────────────────────────────────────────────────────────────
- * Ledger SDK backend: alias cx_bn_*/cx_mont_* identifiers as zkn_*
+ * Ledger SDK backend: alias cx_bn_ and cx_mont_ identifiers to zkn_
  * The actual symbols are provided by the SDK at link time. We just
  * pretend they are zkn_* in the calling code.
  * ─────────────────────────────────────────────────────────────────── */
