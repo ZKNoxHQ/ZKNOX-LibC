@@ -23,6 +23,8 @@
  * Copyright (c) 2025 ZKNOX / Kohaku
  */
 
+#ifdef ZKN_HOST_TESTS
+
 #include "zkn_fp4_384.h"
 #include <stdio.h>
 #include <string.h>
@@ -413,3 +415,5 @@ int main(void)
 
     return g_failed ? 1 : 0;
 }
+
+#endif /* ZKN_HOST_TESTS */

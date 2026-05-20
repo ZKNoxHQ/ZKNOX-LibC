@@ -19,6 +19,8 @@
  * Copyright (c) 2025 ZKNOX / Kohaku
  */
 
+#ifdef ZKN_HOST_TESTS
+
 #include <stdio.h>
 #include <string.h>
 #include "zkn_fp12_384.h"
@@ -907,3 +909,5 @@ int main(void)
 
     return fail_count ? 1 : 0;
 }
+
+#endif /* ZKN_HOST_TESTS */

@@ -17,6 +17,8 @@
  * Copyright (c) 2025 ZKNOX — MIT
  */
 
+#ifdef ZKN_HOST_TESTS
+
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
@@ -130,3 +132,5 @@ int main(void)
     printf("\n══ Results: %d/%d passed ══\n", g_pass, g_pass + g_fail);
     return g_fail ? 1 : 0;
 }
+
+#endif /* ZKN_HOST_TESTS */

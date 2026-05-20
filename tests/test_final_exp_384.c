@@ -29,6 +29,8 @@
  * Copyright (c) 2025 ZKNOX / Kohaku
  */
 
+#ifdef ZKN_HOST_TESTS
+
 #include <stdio.h>
 #include <string.h>
 
@@ -280,3 +282,5 @@ int main(void)
 
     return (g_fail == 0) ? 0 : 1;
 }
+
+#endif /* ZKN_HOST_TESTS */

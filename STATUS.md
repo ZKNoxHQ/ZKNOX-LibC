@@ -1,5 +1,37 @@
 # zknox-libc status
 
+## What works (v0.2.5)
+
+### v0.2.5 — Guard host tests with #ifdef ZKN_HOST_TESTS
+
+When zknox-libc is consumed as a submodule by a Ledger app, the SDK's
+recursive source glob picks up everything under `src/zknox/`, including
+`src/zknox/tests/test_*.c`. These test programs are written for the SW
+backend (`zkn_bn_t = uint32_t[8]`) and don't compile against the Ledger
+backend (`zkn_bn_t = uint32_t` handle).
+
+The standard SDK exclusion mechanism (`APP_SOURCES_EXCLUDE`) appears not
+to be recognized in the current Ledger app builder image, so the only
+robust fix is at the source level.
+
+Fix: wrap every `tests/test_*.c` in `#ifdef ZKN_HOST_TESTS ... #endif`.
+The libC's own Makefile passes `-DZKN_HOST_TESTS` when compiling tests
+(make/tests.mk). Other consumers (Ledger, Trezor) see the files as
+empty `.o` artifacts when their recursive glob picks them up.
+
+## What works (v0.2.4)
+
+### v0.2.4 — Self-contained error codes in zkn_poseidon_soft
+
+* `src/zkn_mont/zkn_poseidon_soft.c` uses `ZKN_OK` and `ZKN_INVALID_PARAM`
+  but only declared `ZKN_NOT_INITIALIZED` in its own block. On SW
+  builds, the missing symbols come transitively from `zkn_bn_sw.h`.
+  On Ledger builds, neither is provided, causing
+  "use of undeclared identifier 'ZKN_OK'" errors.
+
+  Fix: declare all three codes with `#ifndef` guards (so the file remains
+  standalone regardless of include order or backend).
+
 ## What works (v0.2.3)
 
 ### v0.2.3 — Two more Ledger build fixes

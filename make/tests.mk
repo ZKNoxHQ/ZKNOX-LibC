@@ -33,4 +33,4 @@ test: $(TEST_BINS)
 $(BIN)/%: tests/%.c $(BUILD)/libzknox.a
 	@mkdir -p $(BIN)
 	@echo "  CC   $@"
-	@$(CC) $(CFLAGS) $< $(BUILD)/libzknox.a -o $@
+	@$(CC) $(CFLAGS) -DZKN_HOST_TESTS $< $(BUILD)/libzknox.a -o $@
