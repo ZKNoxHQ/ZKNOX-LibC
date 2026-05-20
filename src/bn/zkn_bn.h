@@ -59,6 +59,7 @@
 #  define zkn_mont_invert_nprime   cx_mont_invert_nprime
 #  define zkn_mont_to_montgomery   cx_mont_to_montgomery
 #  define zkn_mont_from_montgomery cx_mont_from_montgomery
+#  define zkn_mont_pow             cx_mont_pow
 
    /* Helper specific to Ledger backend — declared in zkn_bn_ledger.h */
 #  include "zkn_bn_ledger.h"

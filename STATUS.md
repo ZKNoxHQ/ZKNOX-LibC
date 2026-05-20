@@ -1,5 +1,24 @@
 # zknox-libc status
 
+## What works (v0.2.3)
+
+### v0.2.3 — Two more Ledger build fixes
+
+* `src/bn/zkn_bn.h`: added missing `zkn_mont_pow` alias for the Ledger
+  backend. The function was implemented in `zkn_bn_sw.h` but not aliased
+  to `cx_mont_pow` for the Ledger backend, causing
+  "warning: implicit declaration of function 'zkn_mont_pow'" when
+  `zkn_poseidon_constants.c` was compiled in Ledger mode.
+
+* `src/threshold/babyfrost.{c,h}`: wrapped both files entirely in
+  `#ifdef ZKN_WITH_BABYFROST`. Since the file targets the old sources.zip
+  API (zkn_poseidon.h, zkn_frost_hasher.h, zkn_frost_vss.h — none of
+  which exist in zknox_1905), it cannot compile in Ledger builds.
+  The guard makes the .o silently empty unless the consumer opts in
+  via `DEFINES += ZKN_WITH_BABYFROST`. This is more robust than relying
+  on the Makefile's `APP_SOURCES_EXCLUDE` which doesn't seem to be
+  recognized by all versions of the Ledger SDK.
+
 ## What works (v0.2.2)
 
 ### v0.2.2 — Missing typedef in Ledger backend router

@@ -12,6 +12,8 @@
 #ifndef BABYFROST_H
 #define BABYFROST_H
 
+#ifdef ZKN_WITH_BABYFROST
+
 #include <stdint.h>
 #include <stddef.h>
 
@@ -131,5 +133,7 @@ int babyfrost_verify(babyfrost_ctx_t *ctx,
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* ZKN_WITH_BABYFROST */
 
 #endif /* BABYFROST_H */

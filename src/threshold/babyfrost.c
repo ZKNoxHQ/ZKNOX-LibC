@@ -4,6 +4,9 @@
  * Copyright (c) 2025 ZKNOX / Kohaku
  */
 
+
+#ifdef ZKN_WITH_BABYFROST
+
 #include "babyfrost.h"
 #include "zkn_bn.h"
 #include "zkn_poseidon.h"
@@ -270,3 +273,6 @@ int babyfrost_verify(babyfrost_ctx_t *ctx,
     return zkn_frost_verify(&ctx->curve, sig, pk_x_be, pk_y_be,
                              msg_hash_be, ctx->order, valid);
 }
+
+
+#endif /* ZKN_WITH_BABYFROST */
