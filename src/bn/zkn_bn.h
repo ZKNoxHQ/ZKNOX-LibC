@@ -30,6 +30,7 @@
 
    typedef cx_bn_t              zkn_bn_t;
    typedef cx_bn_mont_ctx_t     zkn_mont_ctx_t;
+   typedef cx_bn_mont_ctx_t     zkn_bn_mont_ctx_t;
    typedef cx_err_t             zkn_err_t;
 
 #  define zkn_bn_lock              cx_bn_lock

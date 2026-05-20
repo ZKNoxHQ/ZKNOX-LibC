@@ -1,5 +1,20 @@
 # zknox-libc status
 
+## What works (v0.2.2)
+
+### v0.2.2 — Missing typedef in Ledger backend router
+
+* `src/bn/zkn_bn.h`: the Ledger backend section was missing the
+  `zkn_bn_mont_ctx_t` alias. The SW backend's `zkn_bn_sw.h` exposes
+  this name, but the Ledger router only had `zkn_mont_ctx_t`
+  (different name with no `_bn_`). High-level code in
+  `zkn_tEdwards.h`, `zkn_poseidon_constants.h`, etc. uses
+  `zkn_bn_mont_ctx_t`, so Ledger build failed with
+  "unknown type name 'zkn_bn_mont_ctx_t'".
+  Fix: added `typedef cx_bn_mont_ctx_t zkn_bn_mont_ctx_t` alongside
+  the existing `zkn_mont_ctx_t` typedef. Both names now resolve in
+  both backends.
+
 ## What works (v0.2.1)
 
 ### v0.2.1 — Critical comment fix
