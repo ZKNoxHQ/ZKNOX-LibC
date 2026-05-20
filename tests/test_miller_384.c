@@ -22,6 +22,7 @@
 #include <string.h>
 
 #include "zkn_pairing_384.h"
+#include "zkn_miller.h"
 
 /* ── Helpers ───────────────────────────────────────────────────────── */
 

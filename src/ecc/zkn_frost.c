@@ -435,7 +435,7 @@ int compute_challenge(zkn_edcurve_t *curve, zkn_edpoint_t *group_commitment, uin
 
   ZKN_CHECK(tEdwards_destroy(curve, group_commitment)); // spare memory
 
-  ZKN_CHECK(Poseidon(&Ctx, 0, &hm, 1)); // state[0] is initialized with 0
+  ZKN_CHECK(Poseidon(&Ctx, 0, (zkn_bn_t *)hm, 1)); // state[0] is initialized with 0
   // ZKN_CHECK(Poseidon_destroy(&Ctx));//release Poseidon, check error
 
   ZKN_CHECK(zkn_mont_from_montgomery(hm, hm, &curve->ctx)); // back to normal domain

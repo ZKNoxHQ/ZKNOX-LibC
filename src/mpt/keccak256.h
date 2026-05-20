@@ -77,7 +77,7 @@ static inline void keccak256_init(keccak256_ctx_t *ctx) {
     memset(ctx, 0, sizeof(*ctx));
 }
 
-static void keccak256_update(keccak256_ctx_t *ctx,
+static inline void keccak256_update(keccak256_ctx_t *ctx,
                              const uint8_t *data, uint32_t len) {
     while (len > 0) {
         uint32_t avail = KECCAK256_RATE - ctx->buf_len;
@@ -97,7 +97,7 @@ static void keccak256_update(keccak256_ctx_t *ctx,
     }
 }
 
-static void keccak256_final(keccak256_ctx_t *ctx, uint8_t out[32]) {
+static inline void keccak256_final(keccak256_ctx_t *ctx, uint8_t out[32]) {
     /* Padding Keccak (pas SHA3 : 0x01, pas 0x06) */
     ctx->buf[ctx->buf_len++] = 0x01;
     memset(ctx->buf + ctx->buf_len, 0, KECCAK256_RATE - ctx->buf_len);

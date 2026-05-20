@@ -254,7 +254,7 @@ int EddsaPoseidon_Sign_final(zkn_edcurve_t *curve, uint8_t *prv, zkn_edpoint_t *
   ZKN_CHECK(tEdwards_destroy(curve, &R));
 
   ZKN_CHECK(zkn_bn_alloc(&hm, 32));
-  ZKN_CHECK(Poseidon(&Ctx, 0, &hm, 1));
+  ZKN_CHECK(Poseidon(&Ctx, 0, (zkn_bn_t *)hm, 1));
   ZKN_CHECK(zkn_mont_from_montgomery(hm, hm, &curve->ctx)); // back to normal domain
 #endif
 
