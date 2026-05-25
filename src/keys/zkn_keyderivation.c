@@ -93,7 +93,7 @@ zkn_error_t derive_pubkey_secp256k1(const uint8_t *privkey_bytes,
                                     uint8_t *pubkey_out,
                                     size_t *pubkey_len)
 {
-    zkn_err_t err;
+    zkn_error_t err;
     cx_ecfp_private_key_t privkey;
     cx_ecfp_public_key_t pubkey;
 
@@ -165,7 +165,7 @@ zkn_error_t derive_pubkey_ed25519(const uint8_t *privkey_bytes,
                                   uint8_t *pubkey_out,
                                   size_t *pubkey_len)
 {
-    zkn_err_t err;
+    zkn_error_t err;
     cx_ecfp_private_key_t privkey;
     cx_ecfp_public_key_t pubkey;
 
