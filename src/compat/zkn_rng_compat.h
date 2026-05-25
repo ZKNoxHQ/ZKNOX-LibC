@@ -2,23 +2,22 @@
  * zkn_rng_compat.h — RNG compatibility layer
  *
  * Provides zkn_rng(buf, len) that calls:
- *   - cx_rng() on Ledger
+ *   - cx_rng() on Ledger BOLOS  (ZKN_BN_BACKEND_LEDGER or ZKN_RNG_BOLOS)
  *   - random_buffer() on Trezor (define ZKN_RNG_TREZOR additionally)
- *   - /dev/urandom on Linux/macOS host
+ *   - /dev/urandom on Linux/macOS host (default)
  *
  * Copyright (c) 2025 ZKNOX — MIT
  */
-
 #ifndef ZKN_RNG_COMPAT_H
 #define ZKN_RNG_COMPAT_H
 
 #include <stddef.h>
 #include <stdint.h>
 
-#if defined(ZKN_BN_BACKEND_LEDGER)
+#if defined(ZKN_BN_BACKEND_LEDGER) || defined(ZKN_RNG_BOLOS)
 #  include "cx.h"
-#  define zkn_rng(buf, len)            cx_rng((buf), (len))
-#  define zkn_trng_get_random_data(buf, len)  cx_trng_get_random_data((buf), (len))
+#  define zkn_rng(buf, len)                  cx_rng((buf), (len))
+#  define zkn_trng_get_random_data(buf, len) cx_trng_get_random_data((buf), (len))
 #else
 /* Software backend: implemented in zkn_rng_compat.c
  * On Trezor:  ZKN_RNG_TREZOR  → uses random_buffer() from crypto/rand.h
