@@ -39,9 +39,14 @@ int zkn_bn_alloc(zkn_bn_t *x, size_t nbytes)
 int zkn_bn_alloc_init(zkn_bn_t *x, size_t nbytes,
                       const uint8_t *value, size_t value_nbytes)
 {
+    /* BUG FIX: previous version ignored value_nbytes and always read 32 bytes
+     * via zkn_fe256_from_be, reading past the buffer when value_nbytes < 32.
+     * See zkn_bn_init for the same fix and explanation. */
     (void)nbytes;
-    (void)value_nbytes;
-    zkn_fe256_from_be(*x, value);
+    if (value_nbytes > ZKN_MONT_BYTES) value_nbytes = ZKN_MONT_BYTES;
+    uint8_t buf[ZKN_MONT_BYTES] = {0};
+    memcpy(buf + (ZKN_MONT_BYTES - value_nbytes), value, value_nbytes);
+    zkn_fe256_from_be(*x, buf);
     return ZKN_OK;
 }
 
@@ -57,8 +62,16 @@ int zkn_bn_destroy(zkn_bn_t *x)
 
 int zkn_bn_init(zkn_bn_t x, const uint8_t *value, size_t value_nbytes)
 {
-    (void)value_nbytes;
-    zkn_fe256_from_be(x, value);
+    /* BUG FIX: previous version ignored value_nbytes and always read 32 bytes
+     * via zkn_fe256_from_be, reading past the buffer when value_nbytes < 32.
+     *
+     * In CX (Ledger SDK), cx_bn_init reads exactly value_nbytes bytes BE and
+     * zero-pads the high-order bytes. We mirror that semantics here. */
+    if (value_nbytes > ZKN_MONT_BYTES) value_nbytes = ZKN_MONT_BYTES;
+    uint8_t buf[ZKN_MONT_BYTES] = {0};
+    /* Place the BE input in the LOW-order bytes (= high indices) of buf */
+    memcpy(buf + (ZKN_MONT_BYTES - value_nbytes), value, value_nbytes);
+    zkn_fe256_from_be(x, buf);
     return ZKN_OK;
 }
 
@@ -214,12 +227,31 @@ int zkn_bn_tst_bit(const zkn_bn_t x, uint32_t n, bool *set)
 
 int zkn_bn_reduce(zkn_bn_t r, const zkn_bn_t value, const zkn_bn_t modulus)
 {
-    /* Copy value into r, then if r >= modulus subtract modulus once. */
+    /* r = value mod modulus.
+     *
+     * BUG FIX: the previous version did at most ONE subtraction.
+     * For moduli where p < 2^256 / 2 (e.g. BabyJubjub: p ~= 0.19 * 2^256),
+     * a 256-bit input can be up to ~5.3 * p, requiring multiple
+     * subtractions. The single-subtraction version would silently
+     * produce values still >= modulus, causing downstream errors in
+     * Montgomery operations (which assume input < modulus).
+     *
+     * We use raw 256-bit subtraction (not zkn_sub_mod_256, whose modular
+     * wrap semantics make a chained loop awkward). Variable-time is
+     * acceptable here because the input is either random (zk-blinding,
+     * not secret) or a non-secret value to reduce.
+     */
     memcpy(r, value, sizeof(zkn_fe256_t));
-    int diff = 0;
-    zkn_bn_cmp(r, modulus, &diff);
-    if (diff >= 0) {
-        zkn_sub_mod_256(r, r, modulus, modulus);
+    for (;;) {
+        zkn_limb_t tmp[8];
+        zkn_limb_t borrow = 0;
+        for (int i = 0; i < 8; i++) {
+            zkn_dlimb_t d = (zkn_dlimb_t)r[i] - modulus[i] - borrow;
+            tmp[i] = (zkn_limb_t)d;
+            borrow = (zkn_limb_t)(d >> 63);
+        }
+        if (borrow) break;  /* r < modulus, done */
+        memcpy(r, tmp, sizeof(zkn_fe256_t));
     }
     return ZKN_OK;
 }
