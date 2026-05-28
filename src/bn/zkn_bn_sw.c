@@ -40,8 +40,13 @@ int zkn_bn_alloc_init(zkn_bn_t *x, size_t nbytes,
                       const uint8_t *value, size_t value_nbytes)
 {
     (void)nbytes;
-    (void)value_nbytes;
-    zkn_fe256_from_be(*x, value);
+    uint8_t buf[ZKN_MONT_BYTES] = {0};
+    if (value_nbytes >= ZKN_MONT_BYTES) {
+        memcpy(buf, value + (value_nbytes - ZKN_MONT_BYTES), ZKN_MONT_BYTES);
+    } else {
+        memcpy(buf + (ZKN_MONT_BYTES - value_nbytes), value, value_nbytes);
+    }
+    zkn_fe256_from_be(*x, buf);
     return ZKN_OK;
 }
 
@@ -57,8 +62,17 @@ int zkn_bn_destroy(zkn_bn_t *x)
 
 int zkn_bn_init(zkn_bn_t x, const uint8_t *value, size_t value_nbytes)
 {
-    (void)value_nbytes;
-    zkn_fe256_from_be(x, value);
+    /* BUG FIX (v2): match Ledger CX cx_bn_init semantics for BE input.
+     *   value_nbytes < 32 → zero-extend high bytes (input in low positions)
+     *   value_nbytes > 32 → keep the LOW-order 32 bytes
+     *   value_nbytes == 32 → direct copy */
+    uint8_t buf[ZKN_MONT_BYTES] = {0};
+    if (value_nbytes >= ZKN_MONT_BYTES) {
+        memcpy(buf, value + (value_nbytes - ZKN_MONT_BYTES), ZKN_MONT_BYTES);
+    } else {
+        memcpy(buf + (ZKN_MONT_BYTES - value_nbytes), value, value_nbytes);
+    }
+    zkn_fe256_from_be(x, buf);
     return ZKN_OK;
 }
 
@@ -214,12 +228,20 @@ int zkn_bn_tst_bit(const zkn_bn_t x, uint32_t n, bool *set)
 
 int zkn_bn_reduce(zkn_bn_t r, const zkn_bn_t value, const zkn_bn_t modulus)
 {
-    /* Copy value into r, then if r >= modulus subtract modulus once. */
+    /* BUG FIX (v2): loop subtractions until r < modulus. A single subtraction
+     * is insufficient when value can exceed 2*modulus (e.g. BabyJubjub
+     * p ~= 0.19*2^256, where a 256-bit input can be up to ~5.3*p). */
     memcpy(r, value, sizeof(zkn_fe256_t));
-    int diff = 0;
-    zkn_bn_cmp(r, modulus, &diff);
-    if (diff >= 0) {
-        zkn_sub_mod_256(r, r, modulus, modulus);
+    for (;;) {
+        zkn_limb_t tmp[8];
+        zkn_limb_t borrow = 0;
+        for (int i = 0; i < 8; i++) {
+            zkn_dlimb_t d = (zkn_dlimb_t)r[i] - modulus[i] - borrow;
+            tmp[i] = (zkn_limb_t)d;
+            borrow = (zkn_limb_t)(d >> 63);
+        }
+        if (borrow) break;            /* r < modulus → done */
+        memcpy(r, tmp, sizeof(zkn_fe256_t));
     }
     return ZKN_OK;
 }
