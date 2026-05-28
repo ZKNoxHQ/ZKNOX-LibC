@@ -49,7 +49,7 @@ typedef struct
 
   // for local computations
   zkn_bn_t temp;                     // to store a single value
-  zkn_bn_t tmp[_MAX_POSEIDON_INPUT]; // to copy the state
+  zkn_bn_t tmp[_MAX_POSEIDON_nCELLS]; // to copy the state (must be nb_state_cells = nb_inputs+1, NOT nb_inputs)
 
 } poseidon_ctx_t;
 
