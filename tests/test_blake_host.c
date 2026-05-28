@@ -1,3 +1,10 @@
+/* Host-only test — compiled solely by `make test` (which defines
+ * ZKN_HOST_TESTS). The Ledger SDK app build sweeps every .c under the
+ * submodule; without this guard it would try to compile this file with
+ * zkn_bn_t = cx_bn_t (a handle, not an array) and fail. The guard makes
+ * the file an empty translation unit in any non-host build. */
+#ifdef ZKN_HOST_TESTS
+
 /*
  * test_hash_host.c — Host tests for BLAKE-512 (circomlibjs-compatible variant)
  *
@@ -122,3 +129,5 @@ int main(void) {
 
     return fail ? 1 : 0;
 }
+
+#endif /* ZKN_HOST_TESTS */

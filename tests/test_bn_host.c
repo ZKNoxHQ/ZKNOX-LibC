@@ -1,3 +1,10 @@
+/* Host-only test — compiled solely by `make test` (which defines
+ * ZKN_HOST_TESTS). The Ledger SDK app build sweeps every .c under the
+ * submodule; without this guard it would try to compile this file with
+ * zkn_bn_t = cx_bn_t (a handle, not an array) and fail. The guard makes
+ * the file an empty translation unit in any non-host build. */
+#ifdef ZKN_HOST_TESTS
+
 /*
  * Regression tests for three SW backend bugs found while porting RAILGUN
  * to BACKEND=sw on Ledger:
@@ -261,3 +268,5 @@ int main(void) {
 
     return tests_failed == 0 ? 0 : 1;
 }
+
+#endif /* ZKN_HOST_TESTS */
