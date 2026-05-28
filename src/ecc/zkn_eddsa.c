@@ -118,7 +118,6 @@ int EddsaPoseidon_Sign_final(zkn_edcurve_t *curve, uint8_t *prv, zkn_edpoint_t *
     return ZKN_WRONG_LENGTH;
   }
 
-  zkn_bn_t r;       // r allocated on 64 bytes, output of blake prior to reduction, or 32 bytes when working on Fq
   zkn_bn_t bnbig_n; // order encoded over 64 bytes to allow reduction to be called on r
   zkn_bn_t red_r;   // r reduced over 64 bytes
 
@@ -147,21 +146,48 @@ int EddsaPoseidon_Sign_final(zkn_edcurve_t *curve, uint8_t *prv, zkn_edpoint_t *
     ZKN_CHECK(zkn_blake512_final(&bctx, rbuff));
   }
 
+  /* Reduce the 512-bit BLAKE output modulo the subgroup order l.
+   *
+   * The SW backend's zkn_bn_t is a fixed 256-bit type, so it cannot hold the
+   * 512-bit nonce hash. Computing r = H mod l via a single 64-byte zkn_bn was
+   * silently truncating H to 256 bits (the low/high half depending on
+   * zkn_bn_init's byte-keeping policy), producing a wrong nonce and a
+   * signature that did not match circomlib.
+   *
+   * Instead we split H (big-endian after the reversal below) into two 256-bit
+   * halves and combine them with 256-bit modular arithmetic only:
+   *     r = (lo + hi * (2^256 mod l)) mod l
+   * which equals fromRprLE(rbuff,0,64) mod l — bit-for-bit identical to
+   * circomlib's signPoseidon. Works on both the SW and Ledger backends.
+   */
   for (size_t i = 0; i < 64; i++)
-    sbuff[i] = rbuff[63 - i]; // endianness
+    sbuff[i] = rbuff[63 - i]; // 512-bit BE: sbuff[0..32]=hi, sbuff[32..64]=lo
 
-  ZKN_CHECK(zkn_bn_alloc_init(&r, 64, sbuff, 64));
-  ZKN_CHECK(zkn_bn_alloc(&red_r, 64));
-
-  uint8_t big_n[64] = {
-      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  /* l = BabyJubjub subgroup order */
+  static const uint8_t order_l[32] = {
       0x06, 0x0c, 0x89, 0xce, 0x5c, 0x26, 0x34, 0x05, 0x37, 0x0a, 0x08, 0xb6, 0xd0, 0x30, 0x2b, 0x0b,
       0xab, 0x3e, 0xed, 0xb8, 0x39, 0x20, 0xee, 0x0a, 0x67, 0x72, 0x97, 0xdc, 0x39, 0x21, 0x26, 0xf1};
+  /* 2^256 mod l (precomputed) */
+  static const uint8_t two256_mod_l[32] = {
+      0x01, 0xf1, 0x64, 0x24, 0xe1, 0xbb, 0x77, 0x24, 0xf8, 0x5a, 0x92, 0x01, 0xd8, 0x18, 0xf0, 0x15,
+      0xe7, 0xac, 0xff, 0xc6, 0xa0, 0x98, 0xf2, 0x4b, 0x07, 0x33, 0x15, 0xde, 0xa0, 0x8f, 0x9c, 0x76};
 
-  ZKN_CHECK(zkn_bn_alloc_init(&bnbig_n, 64, big_n, 64));
+  zkn_bn_t bn_l, bn_c, bn_hi, bn_lo;
+  ZKN_CHECK(zkn_bn_alloc_init(&bn_l, 32, order_l, 32));
+  ZKN_CHECK(zkn_bn_alloc_init(&bn_c, 32, two256_mod_l, 32));
+  ZKN_CHECK(zkn_bn_alloc_init(&bn_hi, 32, sbuff, 32));        /* hi (BE) */
+  ZKN_CHECK(zkn_bn_alloc_init(&bn_lo, 32, sbuff + 32, 32));   /* lo (BE) */
 
-  ZKN_CHECK(zkn_bn_reduce(red_r, r, bnbig_n)); // reduce cannot be used in place ?
+  ZKN_CHECK(zkn_bn_alloc(&red_r, 32));
+  /* red_r = hi * (2^256 mod l) mod l */
+  ZKN_CHECK(zkn_bn_mod_mul(red_r, bn_hi, bn_c, bn_l));
+  /* red_r = (red_r + lo) mod l */
+  ZKN_CHECK(zkn_bn_mod_add(red_r, red_r, bn_lo, bn_l));
+
+  ZKN_CHECK(zkn_bn_destroy(&bn_l));
+  ZKN_CHECK(zkn_bn_destroy(&bn_c));
+  ZKN_CHECK(zkn_bn_destroy(&bn_hi));
+  ZKN_CHECK(zkn_bn_destroy(&bn_lo));
 
   uint8_t scalar[32];
   ZKN_CHECK(zkn_bn_export(red_r, scalar, 32));
@@ -177,8 +203,6 @@ int EddsaPoseidon_Sign_final(zkn_edcurve_t *curve, uint8_t *prv, zkn_edpoint_t *
   ZKN_CHECK(zkn_bn_export(red_r, r_u8, 32));
 
   // large size not required anymore
-  ZKN_CHECK(zkn_bn_destroy(&bnbig_n));
-  ZKN_CHECK(zkn_bn_destroy(&r));
   ZKN_CHECK(zkn_bn_destroy(&red_r));
 
   ZKN_CHECK(tEdwards_Curve_partial_destroy(curve)); // liberate work variables only
@@ -264,7 +288,7 @@ int EddsaPoseidon_Sign_final(zkn_edcurve_t *curve, uint8_t *prv, zkn_edpoint_t *
   zkn_bn_t hms;
   ZKN_CHECK(zkn_bn_alloc(&hms, 32));
 
-  ZKN_CHECK(zkn_bn_alloc_init(&bnbig_n, 32, big_n + 32, 32));
+  ZKN_CHECK(zkn_bn_alloc_init(&bnbig_n, 32, order_l, 32));
   // ZKN_CHECK(zkn_bn_export(bnbig_n, out+64, 32));
 
   ZKN_CHECK(zkn_bn_mod_mul(hms, hm, bn_s, bnbig_n)); // hms=hm*s mod q, beware modmul is destructive
