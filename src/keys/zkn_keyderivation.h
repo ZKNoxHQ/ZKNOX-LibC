@@ -34,9 +34,10 @@ typedef enum
 // Purpose
 #define PURPOSE_BIP44 (44 | HARDENED)
 #define PURPOSE_VIEWING (420 | HARDENED)
+#define PURPOSE_RAILGUN_7702 (7702 | HARDENED)   // Dedicated EIP-7702 delegation slot
 
 // Coin types
-#define COIN_TYPE_ETH (60 | HARDENED)
+#define COIN_TYPE_ETH (60 | HARDENED)            // legacy — no longer derivable (removed from PATH_APP_LOAD_PARAMS in the Makefile)
 #define COIN_TYPE_RAILGUN (1984 | HARDENED)
 
 #define COIN_TYPE_ZKNOX (9004 | HARDENED) // TODO: register or migrate
@@ -56,7 +57,13 @@ static const uint32_t PATH_ZKNOX_ID[] = {
     PURPOSE_BIP44, COIN_TYPE_ZKNOX, HARDENED, HARDENED, 0}; // m/44'/9004'/0'/0'/0
 
 static const uint32_t PATH_ETHEREUM[] = {
-    PURPOSE_BIP44, COIN_TYPE_ETH, HARDENED, 0, 0}; // m/44'/60'/0'/0/0
+    PURPOSE_RAILGUN_7702, COIN_TYPE_RAILGUN, HARDENED, 0, 0}; // m/7702'/1984'/0'/0/0
+    // Was previously m/44'/60'/0'/0/0 (standard ETH). Moved to a dedicated
+    // 7702'/1984' derivation slot so this app cannot derive a key that an
+    // end user might already be using from MetaMask / Ledger Live / Rabby
+    // etc. — bounding the blast radius of an EIP-7702 delegation. Must stay
+    // in sync with PATH_APP_LOAD_PARAMS in the Makefile (which whitelists
+    // the 7702'/1984' prefix and removes 44'/60').
 
 static const uint32_t PATH_SPENDING[] = {
     PURPOSE_BIP44, COIN_TYPE_RAILGUN, (0 | HARDENED), (0 | HARDENED), (0 | HARDENED)}; // m/44'/1984'/0'/0'/0'  — all hardened (SLIP-0010 requirement)
