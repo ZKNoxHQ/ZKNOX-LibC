@@ -104,22 +104,6 @@ zkn_error_t derive_private_key(key_type_t type, uint32_t account, uint8_t *out_k
 zkn_error_t derive_railgun_key(const uint32_t *path, uint8_t *out_key, uint8_t *out_chain);
 
 /**
- * Derive Railgun key using SLIP-0010 extended with "babyjubjub seed".
- *
- * Used for both spending (BabyJubjub) and viewing (Ed25519) keys.
- * The derivation mechanics are identical — only the path differs.
- * The 32-byte output is interpreted as:
- *   - Spending: BabyJubjub private key (input to EdDSA prv2pub)
- *   - Viewing: Ed25519 private key (input to Ed25519 pubkey derivation)
- *
- * @param path       BIP-44 path (all levels hardened)
- * @param out_key    32 bytes output
- * @param out_chain  32 bytes chain code (can be NULL)
- * @return           Error code
- */
-zkn_error_t derive_railgun_key(const uint32_t *path, uint8_t *out_key, uint8_t *out_chain);
-
-/**
  * Derive secp256k1 public key from private key bytes
  */
 zkn_error_t derive_pubkey_secp256k1(const uint8_t *privkey_bytes,

@@ -44,7 +44,11 @@ SRCS_PLONK     := src/bls12381/zkn_plonk.c \
 # Hash functions: BLAKE-512, Poseidon (always built)
 SRCS_HASH      := src/hash/zkn_blake512.c \
                   src/hash/zkn_poseidon_constants.c \
-                  src/hash/zkn_rfc9591frost.c
+                  src/hash/zkn_rfc9591frost.c \
+                  src/hash/zkn_bech32m.c
+
+# AES-GCM (Ledger-only wrapper over BOLOS cx_aes_gcm_*; gated by WITH_KEYS)
+SRCS_AES       := src/aes/zkn_aes_gcm.c
 
 # Curve operations: twisted Edwards (BabyJubjub, Bandersnatch)
 SRCS_CURVE     := src/ecc/zkn_tEdwards.c \
@@ -62,4 +66,6 @@ SRCS_FROST     := src/ecc/zkn_frost.c \
 SRCS_THRESHOLD := src/threshold/babyfrost.c
 
 # Ledger BIP32 key derivation (Ledger-only)
-SRCS_KEYS      := src/keys/zkn_keyderivation.c
+SRCS_KEYS      := src/keys/zkn_keyderivation.c \
+                  src/keys/zkn_ed25519_scalar.c \
+                  src/keys/zkn_ed25519_ecdh.c

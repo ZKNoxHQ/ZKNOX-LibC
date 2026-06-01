@@ -86,12 +86,14 @@ void gen_integer(uint64_t state[2], uint64_t out[4])
     out[2] = next64_graingen(state, 64);
     out[3] = next64_graingen(state, 64);
 
-    if (out[0] > 0x305a4b4e4f582121)
-    { // magic number
+    /* Reject if out[0] exceeds the top 64 bits of the BN254 scalar prime p,
+     * i.e. would yield an assembled 254-bit value >= p. The previous value
+     * 0x305a4b4e4f582121 ("0ZKNOX!!" in ASCII) was a placeholder. */
+    if (out[0] > 0x30644e72e131a029ULL) {
       flag = 0;
-    }
-    else
+    } else {
       flag = 1;
+    }
   }
 
   // Swap because of ARM endianness
