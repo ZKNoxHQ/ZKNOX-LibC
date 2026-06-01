@@ -4,7 +4,7 @@
  * Standalone port of the Ledger ZKNOX Poseidon implementation.
  * All cx_bn/cx_mont calls replaced with zkn_bn equivalents.
  *
- * Supports Poseidon-5 (5 inputs, 6 state cells, pow=5).
+ * Supports Poseidon-1 through Poseidon-7 (1..7 inputs, 2..8 state cells, pow=5).
  * Field: BN254 scalar field (BabyJubjub base field).
  *
  * Copyright (c) 2025 ZKNOX / Kohaku
@@ -21,10 +21,9 @@ extern "C" {
 
 /* ── Constants ─────────────────────────────────────────────────────── */
 
-#define POSEIDON_NROUNDS_F   8    /* full rounds   */
-#define POSEIDON_NROUNDS_P  60    /* partial rounds (for t=6) */
-#define POSEIDON_MAX_INPUTS  5
-#define POSEIDON_MAX_CELLS   6    /* inputs + 1 */
+#define POSEIDON_NROUNDS_F   8    /* full rounds (constant across arities)   */
+#define POSEIDON_MAX_INPUTS  7
+#define POSEIDON_MAX_CELLS   8    /* inputs + 1 */
 
 #define POSEIDON_INITIALIZED 0xA5A5A5A5u
 
@@ -34,6 +33,8 @@ typedef struct {
     size_t  nb_inputs;
     size_t  nb_state_cells;
     uint8_t pow;
+    size_t  rounds_f;
+    size_t  rounds_p;
 
     uint32_t status;
 
@@ -85,7 +86,7 @@ int zkn_poseidon(poseidon_soft_ctx_t *ctx,
  * Returns the first output element as 32 big-endian bytes.
  *
  * @param inputs     Array of nb_inputs × 32 bytes (big-endian)
- * @param nb_inputs  Number of inputs (1..5)
+ * @param nb_inputs  Number of inputs (1..7)
  * @param out        32-byte output buffer
  */
 int zkn_poseidon_hash(const uint8_t *inputs,
