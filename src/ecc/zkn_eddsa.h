@@ -8,8 +8,6 @@ int zkn_prv_hash(const uint8_t *prv, uint8_t *out, size_t len);
 
 int zkn_prv2pub(zkn_edcurve_t *curve, uint8_t *prv, zkn_edpoint_t *Pub);
 
-int challenge(zkn_edcurve_t *curve, zkn_edpoint_t *R, zkn_edpoint_t *Pub, uint8_t *msg_be, size_t msglen);
-
 /* EDDSA POSEIDON*/
 #define _EDDSA_POSEIDON_NINPUTS 5
 

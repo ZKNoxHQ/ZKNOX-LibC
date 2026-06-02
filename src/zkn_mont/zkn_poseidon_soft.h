@@ -82,6 +82,16 @@ int zkn_poseidon(poseidon_soft_ctx_t *ctx,
                  size_t sizeout);
 
 /**
+ * Release every zkn_bn handle held by the context.
+ *
+ * On the SW backend (zkn_bn_sw) this is a no-op since zkn_bn_destroy itself
+ * is a no-op there. On the Ledger cx_bn backend it returns the
+ * (n+1)^2 + 2(n+1) + 1 bignums back to the BOLOS pool, which is required
+ * to avoid pool exhaustion across successive calls.
+ */
+int zkn_poseidon_destroy(poseidon_soft_ctx_t *ctx);
+
+/**
  * Convenience: hash nb_inputs field elements (big-endian bytes).
  * Returns the first output element as 32 big-endian bytes.
  *

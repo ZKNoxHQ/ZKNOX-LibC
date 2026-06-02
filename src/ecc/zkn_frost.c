@@ -9,7 +9,7 @@
 #include "zkn_errors.h"
 #include "zkn_common.h"
 #include "zkn_tEdwards.h"
-#include "zkn_poseidon_constants.h"
+#include "zkn_poseidon_soft.h"
 #include "zkn_rfc9591frost.h"
 #include "zkn_frost.h"
 
@@ -412,7 +412,7 @@ int compute_challenge(zkn_edcurve_t *curve, zkn_edpoint_t *group_commitment, uin
 
   ZKN_ERROR_INIT();
 
-  poseidon_ctx_t Ctx;
+  poseidon_soft_ctx_t Ctx;
 
   if (msglen != 32)
   {
@@ -420,7 +420,7 @@ int compute_challenge(zkn_edcurve_t *curve, zkn_edpoint_t *group_commitment, uin
   }
 
   ZKN_CHECK(tEdwards_Curve_partial_destroy(curve)); // need to not overflow RAM crypto, no elliptic curve computation from here
-  ZKN_CHECK(Poseidon_alloc_init(&Ctx, 5, 5, &(curve->ctx)));
+  ZKN_CHECK(zkn_poseidon_init(&Ctx, 5, 5, &(curve->ctx)));
 
   // initialize state with R8x, R8y, A8x, A8y, msg in montgomery representation, state[0] is initialized at 0 at calling
   ZKN_CHECK(zkn_bn_copy(Ctx.state[1], group_commitment->x)); // already in montgomery
@@ -435,10 +435,13 @@ int compute_challenge(zkn_edcurve_t *curve, zkn_edpoint_t *group_commitment, uin
 
   ZKN_CHECK(tEdwards_destroy(curve, group_commitment)); // spare memory
 
-  ZKN_CHECK(Poseidon(&Ctx, 0, (zkn_bn_t *)hm, 1)); // state[0] is initialized with 0
-  // ZKN_CHECK(Poseidon_destroy(&Ctx));//release Poseidon, check error
+  ZKN_CHECK(zkn_poseidon(&Ctx, 0, (zkn_bn_t *)hm, 1)); // state[0] is initialized with 0
 
   ZKN_CHECK(zkn_mont_from_montgomery(hm, hm, &curve->ctx)); // back to normal domain
+
+  /* Release the Poseidon bignum handles. No-op on SW backend; required on
+   * cx_bn backend to keep the BOLOS BN pool from filling up. */
+  ZKN_CHECK(zkn_poseidon_destroy(&Ctx));
 
   ZKN_ERROR_CLOSE();
 }

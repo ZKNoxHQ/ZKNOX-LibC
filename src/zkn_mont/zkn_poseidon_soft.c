@@ -985,6 +985,29 @@ int zkn_poseidon(poseidon_soft_ctx_t *ctx,
     return ZKN_OK;
 }
 
+/* Release every zkn_bn handle held by `ctx`. On the SW backend zkn_bn_destroy
+ * is a no-op so this is harmless; on the cx_bn backend it returns the
+ * (n+1)^2 + 2(n+1) + 1 bignums back to the BOLOS pool — essential for
+ * preventing pool exhaustion across successive calls. */
+int zkn_poseidon_destroy(poseidon_soft_ctx_t *ctx)
+{
+    if (ctx->status != POSEIDON_INITIALIZED)
+        return ZKN_NOT_INITIALIZED;
+
+    size_t t = ctx->nb_state_cells;
+    for (size_t i = 0; i < t; i++) {
+        ZKN_CHECK(zkn_bn_destroy(&ctx->state[i]));
+        ZKN_CHECK(zkn_bn_destroy(&ctx->tmp[i]));
+        for (size_t j = 0; j < t; j++) {
+            ZKN_CHECK(zkn_bn_destroy(&ctx->MixColumn[i * t + j]));
+        }
+    }
+    ZKN_CHECK(zkn_bn_destroy(&ctx->temp));
+
+    ctx->status = 0;
+    return ZKN_OK;
+}
+
 int zkn_poseidon_hash(const uint8_t *inputs,
                       size_t nb_inputs,
                       uint8_t out[32])
