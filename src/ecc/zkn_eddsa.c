@@ -10,7 +10,7 @@
 #include "zkn_common.h"
 #include "zkn_blake512.h"
 #include "zkn_tEdwards.h"
-#include "zkn_poseidon_soft.h"
+#include "zkn_poseidon.h"
 #include "zkn_eddsa.h"
 
 #define EDDSA_SIZE8 32
@@ -85,7 +85,7 @@ int EddsaPoseidon_Sign_final(zkn_edcurve_t *curve, uint8_t *prv, zkn_edpoint_t *
 {
 
   ZKN_ERROR_INIT();
-  poseidon_soft_ctx_t Ctx;
+  zkn_poseidon_ctx_t Ctx;
 
   if (len != 32)
   {

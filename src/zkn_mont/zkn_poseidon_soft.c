@@ -8,11 +8,21 @@
  *   - rev64 → portable bswap64
  *   - No Ledger SDK dependencies
  *
+ * Backend gate: this is the variable-arity (1..7) Poseidon implementation
+ * used on SW-backend builds. On Ledger CX builds the arity-5 implementation
+ * in zkn_poseidon_constants.c is used instead. Callers should include
+ * `zkn_poseidon.h` (the backend-selecting wrapper), not this file directly.
+ *
  * Copyright (c) 2025 ZKNOX / Kohaku
  */
 
-#include "zkn_poseidon_soft.h"
+#include "zkn_bn.h"
+
+#ifndef ZKN_BN_BACKEND_LEDGER
+
+#include <stdint.h>
 #include <string.h>
+#include "zkn_poseidon_soft.h"
 
 /* ══════════════════════════════════════════════════════════════════════
  *  Error handling (standalone, no Ledger SDK)
@@ -1043,3 +1053,5 @@ int zkn_poseidon_hash(const uint8_t *inputs,
 
     return ZKN_OK;
 }
+
+#endif /* !ZKN_BN_BACKEND_LEDGER */

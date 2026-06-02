@@ -41,11 +41,15 @@ SRCS_GROTH16   := src/bls12381/zkn_groth16.c
 SRCS_PLONK     := src/bls12381/zkn_plonk.c \
                   src/bls12381/zkn_keccak256.c
 
-# Hash functions: BLAKE-512, FROST RFC-9591, bech32m (always built).
-# Poseidon lives in SRCS_POSEIDON_SOFT (zkn_poseidon_init / zkn_poseidon),
-# which carries per-arity MixColumn tables and supersedes the old single-arity
-# Poseidon_alloc_init API that used to live in src/hash/zkn_poseidon_constants.
+# Hash functions.
+# zkn_poseidon_constants.c carries the production-tested arity-5 Poseidon
+# (Poseidon_alloc_init / Poseidon / Poseidon_destroy, poseidon_ctx_t). Its
+# body is guarded by `#ifdef ZKN_BN_BACKEND_LEDGER`, so the .o is empty on
+# SW-backend builds. The SW-backend variable-arity equivalent lives in
+# SRCS_POSEIDON_SOFT, guarded by `#ifndef ZKN_BN_BACKEND_LEDGER`. Callers
+# include `zkn_poseidon.h`, a thin wrapper that picks the right backend.
 SRCS_HASH      := src/hash/zkn_blake512.c \
+                  src/hash/zkn_poseidon_constants.c \
                   src/hash/zkn_rfc9591frost.c \
                   src/hash/zkn_bech32m.c
 

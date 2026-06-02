@@ -9,7 +9,7 @@
 #include "zkn_errors.h"
 #include "zkn_common.h"
 #include "zkn_tEdwards.h"
-#include "zkn_poseidon_soft.h"
+#include "zkn_poseidon.h"
 #include "zkn_rfc9591frost.h"
 #include "zkn_frost.h"
 
@@ -412,7 +412,7 @@ int compute_challenge(zkn_edcurve_t *curve, zkn_edpoint_t *group_commitment, uin
 
   ZKN_ERROR_INIT();
 
-  poseidon_soft_ctx_t Ctx;
+  zkn_poseidon_ctx_t Ctx;
 
   if (msglen != 32)
   {
