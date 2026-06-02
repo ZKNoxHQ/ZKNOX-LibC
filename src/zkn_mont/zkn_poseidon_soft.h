@@ -91,17 +91,8 @@ int zkn_poseidon(poseidon_soft_ctx_t *ctx,
  */
 int zkn_poseidon_destroy(poseidon_soft_ctx_t *ctx);
 
-/**
- * Convenience: hash nb_inputs field elements (big-endian bytes).
- * Returns the first output element as 32 big-endian bytes.
- *
- * @param inputs     Array of nb_inputs × 32 bytes (big-endian)
- * @param nb_inputs  Number of inputs (1..7)
- * @param out        32-byte output buffer
- */
-int zkn_poseidon_hash(const uint8_t *inputs,
-                      size_t nb_inputs,
-                      uint8_t out[32]);
+/* zkn_poseidon_hash is declared in zkn_poseidon.h (backend-agnostic
+ * wrapper around zkn_poseidon_init / zkn_poseidon / zkn_poseidon_destroy). */
 
 #ifdef __cplusplus
 }

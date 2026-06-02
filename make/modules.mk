@@ -49,6 +49,7 @@ SRCS_PLONK     := src/bls12381/zkn_plonk.c \
 # SRCS_POSEIDON_SOFT, guarded by `#ifndef ZKN_BN_BACKEND_LEDGER`. Callers
 # include `zkn_poseidon.h`, a thin wrapper that picks the right backend.
 SRCS_HASH      := src/hash/zkn_blake512.c \
+                  src/hash/zkn_poseidon.c \
                   src/hash/zkn_poseidon_constants.c \
                   src/hash/zkn_rfc9591frost.c \
                   src/hash/zkn_bech32m.c

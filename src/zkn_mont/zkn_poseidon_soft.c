@@ -1018,40 +1018,8 @@ int zkn_poseidon_destroy(poseidon_soft_ctx_t *ctx)
     return ZKN_OK;
 }
 
-int zkn_poseidon_hash(const uint8_t *inputs,
-                      size_t nb_inputs,
-                      uint8_t out[32])
-{
-    if (nb_inputs > POSEIDON_MAX_INPUTS || nb_inputs == 0)
-        return ZKN_INVALID_PARAM;
-
-    /* Init Montgomery context */
-    zkn_bn_mont_ctx_t montctx;
-    zkn_bn_t modulus;
-    ZKN_CHECK(zkn_bn_alloc_init(&modulus, 32, BJJ_PRIME_BE, 32));
-    ZKN_CHECK(zkn_mont_alloc(&montctx, 32));
-    ZKN_CHECK(zkn_mont_init(&montctx, modulus));
-
-    /* Init Poseidon */
-    poseidon_soft_ctx_t ctx;
-    ZKN_CHECK(zkn_poseidon_init(&ctx, 5, nb_inputs, &montctx));
-
-    /* Load inputs into state[1..nb_inputs] in Montgomery form */
-    for (size_t i = 0; i < nb_inputs; i++) {
-        ZKN_CHECK(zkn_bn_init(ctx.state[i + 1], inputs + 32 * i, 32));
-        ZKN_CHECK(zkn_mont_to_montgomery(ctx.state[i + 1],
-                                         ctx.state[i + 1], &montctx));
-    }
-
-    /* Hash */
-    zkn_bn_t result;
-    ZKN_CHECK(zkn_poseidon(&ctx, 0, &result, 1));
-
-    /* De-montgomerize and export */
-    ZKN_CHECK(zkn_mont_from_montgomery(result, result, &montctx));
-    ZKN_CHECK(zkn_bn_export(result, out, 32));
-
-    return ZKN_OK;
-}
+/* zkn_poseidon_hash is now defined in src/hash/zkn_poseidon.c as a
+ * backend-agnostic wrapper around zkn_poseidon_init / zkn_poseidon /
+ * zkn_poseidon_destroy. */
 
 #endif /* !ZKN_BN_BACKEND_LEDGER */

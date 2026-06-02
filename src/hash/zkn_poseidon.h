@@ -83,6 +83,19 @@ typedef poseidon_soft_ctx_t zkn_poseidon_ctx_t;
 
 #endif
 
+/**
+ * Convenience one-shot hash. Hashes `nb_inputs` 32-byte big-endian field
+ * elements via the backend-selected Poseidon implementation and writes the
+ * 32-byte digest to `out`. Internally allocates the Montgomery context and
+ * Poseidon state, then releases them via `zkn_poseidon_destroy`.
+ *
+ * Valid arity range depends on the backend (`ZKN_POSEIDON_MAX_INPUTS`).
+ * Returns ZKN_INVALID_PARAM if `nb_inputs` is 0 or above the backend max.
+ */
+int zkn_poseidon_hash(const uint8_t *inputs,
+                      size_t nb_inputs,
+                      uint8_t out[32]);
+
 #ifdef __cplusplus
 }
 #endif
