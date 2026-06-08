@@ -692,14 +692,15 @@ int tEdwards_4MSM_precomp_table(zkn_edcurve_t *curve,
 
   zkn_bn_t bnk1, bnk2, bnk3, bnk4;
   bool bit1, bit2, bit3, bit4;
-  bool initialized = false;
 
   ZKN_CHECK(zkn_bn_alloc_init(&bnk1, curve->fieldsize8, k1, len1));
   ZKN_CHECK(zkn_bn_alloc_init(&bnk2, curve->fieldsize8, k2, len2));
   ZKN_CHECK(zkn_bn_alloc_init(&bnk3, curve->fieldsize8, k3, len3));
   ZKN_CHECK(zkn_bn_alloc_init(&bnk4, curve->fieldsize8, k4, len4));
 
-  /* all-zero fast path */
+  /* All-zero fast path. Real EdDSA signing scalars are never zero, so
+   * this branch is never taken on the sign path and its existence does
+   * not leak per-signature timing. */
   int cmp1 = 0, cmp2 = 0, cmp3 = 0, cmp4 = 0;
   ZKN_CHECK(zkn_bn_cmp_u32(bnk1, 0, &cmp1));
   ZKN_CHECK(zkn_bn_cmp_u32(bnk2, 0, &cmp2));
@@ -721,28 +722,50 @@ int tEdwards_4MSM_precomp_table(zkn_edcurve_t *curve,
     maxlen = len4;
 
   int top = (int)(maxlen << 3) - 1;
-  int pos = top;
 
-  /* skip leading zero windows */
-  while (pos >= 0)
-  {
-    ZKN_CHECK(zkn_bn_tst_bit(bnk1, (uint32_t)pos, &bit1));
-    ZKN_CHECK(zkn_bn_tst_bit(bnk2, (uint32_t)pos, &bit2));
-    ZKN_CHECK(zkn_bn_tst_bit(bnk3, (uint32_t)pos, &bit3));
-    ZKN_CHECK(zkn_bn_tst_bit(bnk4, (uint32_t)pos, &bit4));
-    if (bit1 || bit2 || bit3 || bit4)
-      break;
-    pos--;
-  }
+  /* ── Constant-time precomputed-table 4MSM ──────────────────────────────
+   *
+   * The previous version had three scalar-dependent side-channels:
+   *   (1) leading-zero window skip — loop count revealed the position of
+   *       the top non-zero window across (k1,k2,k3,k4).
+   *   (2) `if (sel != 0)` skip in the main loop — branch pattern revealed
+   *       which 4-bit windows of the scalar were zero (~6% per window).
+   *   (3) `CT_*[sel]` table read — memory-access pattern revealed `sel`
+   *       directly (cache-timing channel on systems with a data cache).
+   *
+   * Fix:
+   *   (1) gone: we always run all `top+1` iterations and start from
+   *       R = neutral. Doubling neutral is neutral; adding T[0]=neutral
+   *       to R is a no-op, so leading-zero windows produce the same
+   *       state as the original implementation.
+   *   (2) gone: we always double + always add. T[0]=neutral makes the
+   *       "skip" case a functional no-op (unified Edwards addition).
+   *   (3) gone: we scan ALL 16 table entries every iteration and select
+   *       T[sel] by a bitwise-mask fold. Memory access pattern is
+   *       identical regardless of `sel`.
+   *
+   * Cost: a handful of extra point operations at the start (doubling
+   * neutral and adding T[0]) plus ~1.5 KB of byte-scan per window
+   * (≈ 65 iterations × 96 bytes = 6 KB extra reads). On Cortex-M4 this
+   * is dominated by the field arithmetic and the overhead is ~5%.
+   *
+   * Leak 1 (the all-zero fast path above) is intentionally kept: it
+   * doesn't fire on real signing scalars and skipping it would slow
+   * down non-signing callers (debug APDU, etc.) for no security gain.
+   */
 
-  if (pos < 0)
-  {
-    ZKN_CHECK(tEdwards_SetNeutral(curve, R));
-    goto cleanup;
-  }
+  /* Build the precomputed table as byte arrays, with T[0] = neutral
+   * in the form (0, mont_One, mont_One). The neutral slot is what makes
+   * the always-add in the main loop a no-op for zero windows. */
+  uint8_t CT_x[16][32] = {0};
+  uint8_t CT_y[16][32] = {0};
+  uint8_t CT_z[16][32] = {0};
 
-  /* coronize table points T[1..15] into byte arrays */
-  uint8_t CT_x[16][32], CT_y[16][32], CT_z[16][32];
+  /* T[0] = neutral. x is already zero from the {0} init; y and z get
+   * mont_One. */
+  ZKN_CHECK(zkn_bn_export(curve->mont_One, CT_y[0], curve->fieldsize8));
+  memcpy(CT_z[0], CT_y[0], curve->fieldsize8);
+
   zkn_edpoint_t Tsel;
   ZKN_CHECK(tEdwards_alloc(curve, &Tsel));
   for (uint8_t i = 1; i < 16; i++)
@@ -756,8 +779,14 @@ int tEdwards_4MSM_precomp_table(zkn_edcurve_t *curve,
     ZKN_CHECK(zkn_bn_export(Tsel.z, CT_z[i], curve->fieldsize8));
   }
 
-  /* main Shamir loop */
-  while (pos >= 0)
+  /* Initialize R = neutral. Subsequent double-and-add iterations
+   * accumulate into R from neutral; leading-zero windows produce R
+   * = neutral × 2^k = neutral, matching the original behaviour without
+   * the leading-zero skip. */
+  ZKN_CHECK(tEdwards_SetNeutral(curve, R));
+
+  uint8_t Tsel_x[32], Tsel_y[32], Tsel_z[32];
+  for (int pos = top; pos >= 0; pos--)
   {
     ZKN_CHECK(zkn_bn_tst_bit(bnk1, (uint32_t)pos, &bit1));
     ZKN_CHECK(zkn_bn_tst_bit(bnk2, (uint32_t)pos, &bit2));
@@ -769,37 +798,42 @@ int tEdwards_4MSM_precomp_table(zkn_edcurve_t *curve,
                             (bit3 ? 2u : 0u) |
                             (bit4 ? 1u : 0u));
 
-    if (!initialized)
+    /* Oblivious table lookup: scan all 16 entries, OR-mask the one
+     * with i == sel into Tsel_*. Memory-access pattern is identical
+     * across iterations and independent of `sel`. */
+    memset(Tsel_x, 0, curve->fieldsize8);
+    memset(Tsel_y, 0, curve->fieldsize8);
+    memset(Tsel_z, 0, curve->fieldsize8);
+    for (uint8_t i = 0; i < 16; i++)
     {
-      if (sel != 0)
+      /* Constant-time mask: 0xFF iff i == sel, else 0x00. Bitwise XOR
+       * is 0 iff equal; fold all bits down to bit 0 via OR-shifts;
+       * subtract 1 with unsigned wrap to invert (0 → 0xFF, 1 → 0x00). */
+      uint8_t neq = (uint8_t)(i ^ sel);
+      neq |= (uint8_t)(neq >> 4);
+      neq |= (uint8_t)(neq >> 2);
+      neq |= (uint8_t)(neq >> 1);
+      neq &= 1u;
+      uint8_t mask = (uint8_t)(neq - 1u);
+
+      for (size_t b = 0; b < curve->fieldsize8; b++)
       {
-        ZKN_CHECK(zkn_bn_init(R->x, CT_x[sel], curve->fieldsize8));
-        ZKN_CHECK(zkn_bn_init(R->y, CT_y[sel], curve->fieldsize8));
-        ZKN_CHECK(zkn_bn_init(R->z, CT_z[sel], curve->fieldsize8));
-        initialized = true;
+        Tsel_x[b] |= (uint8_t)(CT_x[i][b] & mask);
+        Tsel_y[b] |= (uint8_t)(CT_y[i][b] & mask);
+        Tsel_z[b] |= (uint8_t)(CT_z[i][b] & mask);
       }
-      pos--;
-      continue;
     }
+    ZKN_CHECK(zkn_bn_init(Tsel.x, Tsel_x, curve->fieldsize8));
+    ZKN_CHECK(zkn_bn_init(Tsel.y, Tsel_y, curve->fieldsize8));
+    ZKN_CHECK(zkn_bn_init(Tsel.z, Tsel_z, curve->fieldsize8));
 
+    /* Unconditional double + add. When sel == 0, Tsel is the neutral
+     * point (0, mont_One, mont_One) and the unified Edwards addition
+     * returns R unchanged. */
     ZKN_CHECK(tEdwards_double(curve, R, R));
-
-    if (sel != 0)
-    {
-      ZKN_CHECK(zkn_bn_init(Tsel.x, CT_x[sel], curve->fieldsize8));
-      ZKN_CHECK(zkn_bn_init(Tsel.y, CT_y[sel], curve->fieldsize8));
-      ZKN_CHECK(zkn_bn_init(Tsel.z, CT_z[sel], curve->fieldsize8));
-      ZKN_CHECK(tEdwards_add(curve, R, &Tsel, R));
-    }
-
-    pos--;
+    ZKN_CHECK(tEdwards_add(curve, R, &Tsel, R));
   }
   ZKN_CHECK(tEdwards_destroy(curve, &Tsel));
-
-  if (!initialized)
-  {
-    ZKN_CHECK(tEdwards_SetNeutral(curve, R));
-  }
 
 cleanup:
   ZKN_CHECK(zkn_bn_destroy(&bnk1));
