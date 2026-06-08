@@ -786,6 +786,28 @@ int tEdwards_4MSM_precomp_table(zkn_edcurve_t *curve,
   ZKN_CHECK(tEdwards_SetNeutral(curve, R));
 
   uint8_t Tsel_x[32], Tsel_y[32], Tsel_z[32];
+
+  /* Side-channel blinding: re-randomize the projective representation
+   * of R every CORONIZE_PERIOD iterations of the Shamir loop. This is
+   * defence-in-depth on top of the per-table-entry Coronize done at
+   * setup above:
+   *   - Table entries T[1..15] are randomized ONCE at the start of
+   *     each scalar mul (Coronize per entry, fresh λ_i for each).
+   *   - R is RE-RANDOMIZED periodically during the loop, breaking the
+   *     correlation between R's wire-level coordinates and the bits
+   *     of the secret scalar consumed so far.
+   *
+   * For top = 63 (4MSM with 8-byte k_i slices), CORONIZE_PERIOD = 16
+   * gives 3 re-randomizations per scalar mul (at iter 16, 32, 48), or
+   * 6 per signature (one for [s]B in prv2pub, one for [r]B here).
+   * The condition is on the public loop counter, so the Coronize
+   * timing does not depend on the secret scalar.
+   *
+   * Cost: ~6 zkn_trng_get_random + ~18 mont muls per signature on SW.
+   * Coron 1999 ("Resistance against Differential Power Analysis for
+   * Elliptic Curve Cryptosystems"). */
+  const int CORONIZE_PERIOD = 16;
+
   for (int pos = top; pos >= 0; pos--)
   {
     ZKN_CHECK(zkn_bn_tst_bit(bnk1, (uint32_t)pos, &bit1));
@@ -832,6 +854,15 @@ int tEdwards_4MSM_precomp_table(zkn_edcurve_t *curve,
      * returns R unchanged. */
     ZKN_CHECK(tEdwards_double(curve, R, R));
     ZKN_CHECK(tEdwards_add(curve, R, &Tsel, R));
+
+    /* Periodic re-randomization of R (see CORONIZE_PERIOD comment
+     * above). Skips iter 0 (R is still neutral, x=0) and the trailing
+     * iterations that aren't on a period boundary. */
+    int iter = top - pos;
+    if (iter > 0 && (iter % CORONIZE_PERIOD) == 0)
+    {
+      ZKN_CHECK(tEdwards_Coronize(curve, R));
+    }
   }
   ZKN_CHECK(tEdwards_destroy(curve, &Tsel));
 
