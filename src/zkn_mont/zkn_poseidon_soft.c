@@ -53,17 +53,6 @@ static uint64_t bswap64(uint64_t x)
 }
 
 /* ══════════════════════════════════════════════════════════════════════
- *  BabyJubjub field prime (BN254 scalar field)
- * ══════════════════════════════════════════════════════════════════════ */
-
-static const uint8_t BJJ_PRIME_BE[32] = {
-    0x30, 0x64, 0x4e, 0x72, 0xe1, 0x31, 0xa0, 0x29,
-    0xb8, 0x50, 0x45, 0xb6, 0x81, 0x81, 0x58, 0x5d,
-    0x28, 0x33, 0xe8, 0x48, 0x79, 0xb9, 0x70, 0x91,
-    0x43, 0xe1, 0xf5, 0x93, 0xf0, 0x00, 0x00, 0x01
-};
-
-/* ══════════════════════════════════════════════════════════════════════
  *  Grain LFSR — round constant generator (from Poseidon paper)
  *
  *  Generates field elements < p using the Grain v1 LFSR with

@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "zkn_poseidon_soft.h"
+#include "zkn_poseidon.h"   /* for zkn_poseidon_hash (backend-agnostic convenience API) */
 
 static int test_count = 0;
 static int fail_count = 0;
