@@ -172,18 +172,9 @@ static void test_reduce_large(void) {
     zkn_bn_cmp(r, p, &diff);
     CHECK(diff < 0, "r < p  (buggy: single subtraction would leave r > p)");
 
-    /* Specific value: 2^256 - 1 mod p */
-    /* p = 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001
-     * 2^256 mod p = 2^256 - 5p (since 5p = 0x...0000005 approx, 5p < 2^256 < 6p)
-     * Actually 2^256 / p ≈ 5.27 so 2^256 = 5p + k where k < p
-     * 2^256 mod p = 2^256 - 5p
-     * 2^256 - 1 mod p = (2^256 mod p) - 1 = 2^256 - 5p - 1
-     */
-    zkn_bn_t five_p, expected, one = {1};
-    /* 5p computation */
-    zkn_bn_t two_p, four_p;
-    zkn_bn_t big_modulus = {0};   /* effectively no modulus reduction in our sub */
-    /* This is getting complex; just check r < p which is the core property. */
+    /* The exact value of 2^256-1 mod p is non-trivial to compute by hand;
+     * the core property is that the single-subtraction bug would leave r > p,
+     * which the `diff < 0` check above already catches. */
     print_bn("r =", r);
 
     /* Make sure r is not zero (it shouldn't be for value = 2^256-1) */

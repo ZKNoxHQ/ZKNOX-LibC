@@ -41,10 +41,21 @@ SRCS_GROTH16   := src/bls12381/zkn_groth16.c
 SRCS_PLONK     := src/bls12381/zkn_plonk.c \
                   src/bls12381/zkn_keccak256.c
 
-# Hash functions: BLAKE-512, Poseidon (always built)
+# Hash functions.
+# zkn_poseidon_constants.c carries the production-tested arity-5 Poseidon
+# (Poseidon_alloc_init / Poseidon / Poseidon_destroy, poseidon_ctx_t). Its
+# body is guarded by `#ifdef ZKN_BN_BACKEND_LEDGER`, so the .o is empty on
+# SW-backend builds. The SW-backend variable-arity equivalent lives in
+# SRCS_POSEIDON_SOFT, guarded by `#ifndef ZKN_BN_BACKEND_LEDGER`. Callers
+# include `zkn_poseidon.h`, a thin wrapper that picks the right backend.
 SRCS_HASH      := src/hash/zkn_blake512.c \
+                  src/hash/zkn_poseidon.c \
                   src/hash/zkn_poseidon_constants.c \
-                  src/hash/zkn_rfc9591frost.c
+                  src/hash/zkn_rfc9591frost.c \
+                  src/hash/zkn_bech32m.c
+
+# AES-GCM (Ledger-only wrapper over BOLOS cx_aes_gcm_*; gated by WITH_KEYS)
+SRCS_AES       := src/aes/zkn_aes_gcm.c
 
 # Curve operations: twisted Edwards (BabyJubjub, Bandersnatch)
 SRCS_CURVE     := src/ecc/zkn_tEdwards.c \
@@ -62,4 +73,6 @@ SRCS_FROST     := src/ecc/zkn_frost.c \
 SRCS_THRESHOLD := src/threshold/babyfrost.c
 
 # Ledger BIP32 key derivation (Ledger-only)
-SRCS_KEYS      := src/keys/zkn_keyderivation.c
+SRCS_KEYS      := src/keys/zkn_keyderivation.c \
+                  src/keys/zkn_ed25519_scalar.c \
+                  src/keys/zkn_ed25519_ecdh.c

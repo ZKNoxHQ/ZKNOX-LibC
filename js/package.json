@@ -1,0 +1,7 @@
+{
+    "type": "module",
+    "dependencies": {
+        "@scure/base": "^2.2.0",
+        "circomlibjs": "^0.1.7"
+    }
+}

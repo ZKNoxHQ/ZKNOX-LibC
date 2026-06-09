@@ -39,7 +39,7 @@ CFLAGS  := -Wall -Wextra -Wno-unused-parameter
 CFLAGS  += -DZKN_BN_BACKEND_SW
 CFLAGS  += -I src/common -I src/bn -I src/compat
 CFLAGS  += -I src/zkn_mont -I src/bls12381 -I src/ecc -I src/hash
-CFLAGS  += -I src/mpt -I src/keys -I src/threshold
+CFLAGS  += -I src/mpt -I src/keys -I src/threshold -I src/aes
 ifeq ($(DEBUG),1)
   CFLAGS += -O0 -g
 else
@@ -71,8 +71,8 @@ ifeq ($(WITH_MPT),1)
   CFLAGS += -DZKN_WITH_MPT
 endif
 ifeq ($(WITH_KEYS),1)
-  SRCS += $(SRCS_KEYS)
-  $(warning keys/ module needs the Ledger SDK; SW build will fail.)
+  SRCS += $(SRCS_KEYS) $(SRCS_AES)
+  $(warning keys/ and aes/ modules need the Ledger SDK; SW build will fail.)
 endif
 
 OBJS := $(SRCS:%.c=$(OBJ)/%.o)

@@ -10,8 +10,7 @@
 #include "zkn_common.h"
 #include "zkn_blake512.h"
 #include "zkn_tEdwards.h"
-#include "zkn_poseidon_constants.h"
-#include "zkn_poseidon_soft.h"
+#include "zkn_poseidon.h"
 #include "zkn_eddsa.h"
 
 #define EDDSA_SIZE8 32
@@ -78,29 +77,6 @@ int zkn_prv2pub(zkn_edcurve_t *curve, uint8_t *prv, zkn_edpoint_t *Pub)
   ZKN_ERROR_CLOSE();
 }
 
-// the function is destructive for the curve structure and groupcommitment for poseidon to function
-// once here it is the H(R, A, msg) as in typical schnorr
-int challenge(zkn_edcurve_t *curve, zkn_edpoint_t *R, zkn_edpoint_t *Pub, uint8_t *msg_be, size_t msglen)
-{
-
-  ZKN_ERROR_INIT();
-
-  poseidon_ctx_t Ctx;
-
-  ZKN_CHECK(Poseidon_alloc_init(&Ctx, 5, 5, &(curve->ctx)));
-
-  // initialize state with R8x, R8y, A8x, A8y, msg in montgomery representation, state[0] is initialized at 0 at calling
-  ZKN_CHECK(zkn_bn_copy(Ctx.state[1], R->x));           // already in montgomery
-  ZKN_CHECK(zkn_bn_copy(Ctx.state[2], R->y));           // already in montgomery
-  ZKN_CHECK(zkn_bn_copy(Ctx.state[3], Pub->x));         // already in montgomery and normalized
-  ZKN_CHECK(zkn_bn_copy(Ctx.state[4], Pub->y));         // already in montgomery and normalized
-  ZKN_CHECK(zkn_bn_init(Ctx.state[5], msg_be, msglen)); // init state5 with message
-
-  ZKN_CHECK(zkn_mont_to_montgomery(Ctx.state[5], Ctx.state[5], &curve->ctx)); // montgomerize message
-
-  ZKN_ERROR_CLOSE();
-}
-
 // derivation of public key, in a RFC8032 way, but using babyjujub
 // for now message is limited to 64 bytes
 // todo: use init/update/final
@@ -109,7 +85,7 @@ int EddsaPoseidon_Sign_final(zkn_edcurve_t *curve, uint8_t *prv, zkn_edpoint_t *
 {
 
   ZKN_ERROR_INIT();
-  poseidon_ctx_t Ctx;
+  zkn_poseidon_ctx_t Ctx;
 
   if (len != 32)
   {
@@ -208,7 +184,7 @@ int EddsaPoseidon_Sign_final(zkn_edcurve_t *curve, uint8_t *prv, zkn_edpoint_t *
   // Reuses curve->ctx as the Montgomery context. The curve work-vars were
   // freed just above (partial_destroy), so the pool peak here is ~55-58
   // bignums (< 64 BOLOS capacity). No-op allocs on the SW backend.
-  ZKN_CHECK(Poseidon_alloc_init(&Ctx, 5, 5, &(curve->ctx)));
+  ZKN_CHECK(zkn_poseidon_init(&Ctx, 5, 5, &(curve->ctx)));
 
   ZKN_CHECK(zkn_bn_copy(Ctx.state[1], R.x));        // already in montgomery
   ZKN_CHECK(zkn_bn_copy(Ctx.state[2], R.y));        // already in montgomery
@@ -220,15 +196,13 @@ int EddsaPoseidon_Sign_final(zkn_edcurve_t *curve, uint8_t *prv, zkn_edpoint_t *
   ZKN_CHECK(tEdwards_destroy(curve, &R));
 
   ZKN_CHECK(zkn_bn_alloc(&hm, 32));
-  ZKN_CHECK(Poseidon(&Ctx, 0, (zkn_bn_t *)hm, 1));
+  ZKN_CHECK(zkn_poseidon(&Ctx, 0, (zkn_bn_t *)hm, 1));
   ZKN_CHECK(zkn_mont_from_montgomery(hm, hm, &curve->ctx)); // back to normal domain
 
-  /* Release the 49 cx_bn allocated by Poseidon_alloc_init. Without this the
-   * pool leaks one full Poseidon context (state[6] + tmp[6] + MixColumn[36] +
-   * temp = 49 bignums) per signature. Invisible on the SW backend (alloc is a
-   * no-op) but on the Ledger cx backend it overflows the BOLOS BN pool after a
-   * few signatures and wipes the device. */
-  ZKN_CHECK(Poseidon_destroy(&Ctx));
+  /* Release the 49 cx_bn allocated by zkn_poseidon_init. No-op on SW
+   * backend; required on cx_bn backend to keep the BOLOS BN pool from
+   * filling up across consecutive signatures. */
+  ZKN_CHECK(zkn_poseidon_destroy(&Ctx));
 
   //----------------- COMPUTE S PART
   ZKN_CHECK(zkn_bn_alloc_init(&bn_s, 32, s_u8, 32));
