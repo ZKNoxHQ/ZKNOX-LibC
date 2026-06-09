@@ -51,10 +51,10 @@ int zkn_ed25519_scalar_from_seed(const uint8_t *seed32, uint8_t *scalar_out)
 
     rc = 0;
 out:
-    if (bn_result) cx_bn_destroy(&bn_result);
-    if (bn_L)      cx_bn_destroy(&bn_L);
-    if (bn_scalar) cx_bn_destroy(&bn_scalar);
-    if (bn_locked) cx_bn_unlock();
+    if (bn_result) (void)cx_bn_destroy(&bn_result);
+    if (bn_L)      (void)cx_bn_destroy(&bn_L);
+    if (bn_scalar) (void)cx_bn_destroy(&bn_scalar);
+    if (bn_locked) (void)cx_bn_unlock();
     explicit_bzero(hash, sizeof(hash));
     explicit_bzero(reversed_be, sizeof(reversed_be));
     return rc;
