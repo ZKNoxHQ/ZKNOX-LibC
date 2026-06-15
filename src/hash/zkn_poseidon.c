@@ -11,6 +11,8 @@
  * Copyright (c) 2025 ZKNOX — MIT
  */
 
+#include <stdbool.h>
+
 #include "zkn_bn.h"
 #include "zkn_errors.h"
 #include "zkn_common.h"
@@ -24,43 +26,53 @@ static const uint8_t BJJ_PRIME_BE[32] = {
     0x43, 0xe1, 0xf5, 0x93, 0xf0, 0x00, 0x00, 0x01,
 };
 
+/* The Ledger backend's `Poseidon` writes to `out[i]` via cx_bn_copy, which
+ * requires a pre-allocated destination handle. The pool must also be locked
+ * around every cx_bn / cx_mont call; cx_bn_unlock erases the pool, so per-
+ * handle destroys are redundant for cleanup and would not compile against
+ * the SW backend's array-typed zkn_bn_t anyway. */
 int zkn_poseidon_hash(const uint8_t *inputs,
                       size_t nb_inputs,
                       uint8_t out[32])
 {
-    ZKN_ERROR_INIT();
-
     if (nb_inputs == 0 || nb_inputs > ZKN_POSEIDON_MAX_INPUTS)
         return ZKN_ERR_INVALID_PARAM;
 
-    /* Init Montgomery context for the BJJ scalar field. */
     zkn_bn_mont_ctx_t montctx;
-    zkn_bn_t modulus;
-    ZKN_CHECK(zkn_bn_alloc_init(&modulus, 32, BJJ_PRIME_BE, 32));
-    ZKN_CHECK(zkn_mont_alloc(&montctx, 32));
-    ZKN_CHECK(zkn_mont_init(&montctx, modulus));
-
-    /* Init Poseidon. */
     zkn_poseidon_ctx_t ctx;
-    ZKN_CHECK(zkn_poseidon_init(&ctx, 5, nb_inputs, &montctx));
+    zkn_bn_t modulus;
+    zkn_bn_t result;
+    bool bn_locked = false;
+    bool ctx_inited = false;
+    int rc = -1;
 
-    /* Load inputs into state[1..nb_inputs] in Montgomery form. */
+    if (zkn_bn_lock(32, 0) != ZKN_OK) goto cleanup;
+    bn_locked = true;
+
+    if (zkn_bn_alloc_init(&modulus, 32, BJJ_PRIME_BE, 32) != ZKN_OK) goto cleanup;
+    if (zkn_mont_alloc(&montctx, 32) != ZKN_OK) goto cleanup;
+    if (zkn_mont_init(&montctx, modulus) != ZKN_OK) goto cleanup;
+
+    if (zkn_poseidon_init(&ctx, 5, nb_inputs, &montctx) != ZKN_OK) goto cleanup;
+    ctx_inited = true;
+
     for (size_t i = 0; i < nb_inputs; i++) {
-        ZKN_CHECK(zkn_bn_init(ctx.state[i + 1], inputs + 32 * i, 32));
-        ZKN_CHECK(zkn_mont_to_montgomery(ctx.state[i + 1],
-                                         ctx.state[i + 1], &montctx));
+        if (zkn_bn_init(ctx.state[i + 1], inputs + 32 * i, 32) != ZKN_OK)
+            goto cleanup;
+        if (zkn_mont_to_montgomery(ctx.state[i + 1],
+                                   ctx.state[i + 1], &montctx) != ZKN_OK)
+            goto cleanup;
     }
 
-    /* Hash. */
-    zkn_bn_t result;
-    ZKN_CHECK(zkn_poseidon(&ctx, 0, &result, 1));
+    if (zkn_bn_alloc(&result, 32) != ZKN_OK) goto cleanup;
+    if (zkn_poseidon(&ctx, 0, &result, 1) != ZKN_OK) goto cleanup;
+    if (zkn_mont_from_montgomery(result, result, &montctx) != ZKN_OK) goto cleanup;
+    if (zkn_bn_export(result, out, 32) != ZKN_OK) goto cleanup;
 
-    /* De-montgomerize and export. */
-    ZKN_CHECK(zkn_mont_from_montgomery(result, result, &montctx));
-    ZKN_CHECK(zkn_bn_export(result, out, 32));
+    rc = ZKN_OK;
 
-    /* Release the bignum handles (no-op on SW backend, required on CX). */
-    (void)zkn_poseidon_destroy(&ctx);
-
-    ZKN_ERROR_CLOSE();
+cleanup:
+    if (ctx_inited) (void)zkn_poseidon_destroy(&ctx);
+    if (bn_locked) (void)zkn_bn_unlock();
+    return rc;
 }

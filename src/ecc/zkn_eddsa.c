@@ -80,7 +80,10 @@ int zkn_prv2pub(zkn_edcurve_t *curve, uint8_t *prv, zkn_edpoint_t *Pub)
 // derivation of public key, in a RFC8032 way, but using babyjujub
 // for now message is limited to 64 bytes
 // todo: use init/update/final
-// note: for now it is destructive for the input curve structure
+// note: for now it is destructive for the input curve structure AND for
+//       the input Pub point (both freed before Poseidon to keep the cx_bn
+//       pool peak under 64 — see the inline comment near the Poseidon
+//       stage for the rationale and historical wipe context).
 int EddsaPoseidon_Sign_final(zkn_edcurve_t *curve, uint8_t *prv, zkn_edpoint_t *Pub, uint8_t *msg, size_t len, uint8_t *out)
 {
 
@@ -175,25 +178,46 @@ int EddsaPoseidon_Sign_final(zkn_edcurve_t *curve, uint8_t *prv, zkn_edpoint_t *
   // large size not required anymore
   ZKN_CHECK(zkn_bn_destroy(&red_r));
 
+  /* Snapshot R and Pub coordinates as Montgomery-form bytes so that both
+   * points can be freed BEFORE zkn_poseidon_init allocates its 49 BN.
+   *
+   * Pre-patch the peak sat at ~58/64 with R(3) + Pub(3) + Ctx(49) + hm(1)
+   * + curve residue all alive at once. SDK transients inside cx_bn_reduce
+   * / cx_bn_mod_mul (a few slots each) pushed us over 64 and wiped the
+   * device. Releasing R + Pub here drops the peak by 6, leaving ~52/64
+   * with real headroom for the SDK's internal allocations.
+   *
+   * Bytes are taken straight from the Montgomery-form handles — no
+   * mont_from_montgomery — and reloaded post-init via zkn_bn_init, which
+   * preserves the bit-pattern. /!\ Pub is destroyed in place; callers
+   * must not touch it after this function returns. */
+  uint8_t rx_mont[32], ry_mont[32], px_mont[32], py_mont[32];
+  ZKN_CHECK(zkn_bn_export(R.x,    rx_mont, 32));
+  ZKN_CHECK(zkn_bn_export(R.y,    ry_mont, 32));
+  ZKN_CHECK(zkn_bn_export(Pub->x, px_mont, 32));
+  ZKN_CHECK(zkn_bn_export(Pub->y, py_mont, 32));
+
+  ZKN_CHECK(tEdwards_destroy(curve, &R));
+  ZKN_CHECK(tEdwards_destroy(curve, Pub));
+
   ZKN_CHECK(tEdwards_Curve_partial_destroy(curve)); // liberate work variables only
 
   for (size_t i = 0; i < 32; i++)
     rbuff[i] = msg[31 - i]; // i will always hate you
 
   // ── Poseidon hm = H(R.x, R.y, Pub.x, Pub.y, msg) ──
-  // Reuses curve->ctx as the Montgomery context. The curve work-vars were
-  // freed just above (partial_destroy), so the pool peak here is ~55-58
-  // bignums (< 64 BOLOS capacity). No-op allocs on the SW backend.
+  // Reuses curve->ctx as the Montgomery context. R + Pub were freed above
+  // so their 6 BN are no longer competing with the 49 Ctx allocs.
   ZKN_CHECK(zkn_poseidon_init(&Ctx, 5, 5, &(curve->ctx)));
 
-  ZKN_CHECK(zkn_bn_copy(Ctx.state[1], R.x));        // already in montgomery
-  ZKN_CHECK(zkn_bn_copy(Ctx.state[2], R.y));        // already in montgomery
-  ZKN_CHECK(zkn_bn_copy(Ctx.state[3], Pub->x));     // already in montgomery and normalized
-  ZKN_CHECK(zkn_bn_copy(Ctx.state[4], Pub->y));     // already in montgomery and normalized
+  // R.x, R.y, Pub.x, Pub.y bytes are already Montgomery — load verbatim,
+  // no to_montgomery (would double-Montgomerize and produce wrong hash).
+  ZKN_CHECK(zkn_bn_init(Ctx.state[1], rx_mont, 32));
+  ZKN_CHECK(zkn_bn_init(Ctx.state[2], ry_mont, 32));
+  ZKN_CHECK(zkn_bn_init(Ctx.state[3], px_mont, 32));
+  ZKN_CHECK(zkn_bn_init(Ctx.state[4], py_mont, 32));
   ZKN_CHECK(zkn_bn_init(Ctx.state[5], rbuff, len)); // init state5 with message
   ZKN_CHECK(zkn_mont_to_montgomery(Ctx.state[5], Ctx.state[5], &curve->ctx));
-
-  ZKN_CHECK(tEdwards_destroy(curve, &R));
 
   ZKN_CHECK(zkn_bn_alloc(&hm, 32));
   ZKN_CHECK(zkn_poseidon(&Ctx, 0, (zkn_bn_t *)hm, 1));
