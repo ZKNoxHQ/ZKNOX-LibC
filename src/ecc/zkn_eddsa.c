@@ -251,5 +251,19 @@ int EddsaPoseidon_Sign_final(zkn_edcurve_t *curve, uint8_t *prv, zkn_edpoint_t *
 
   ZKN_CHECK(zkn_bn_export(hm, out + 64, 32)); // last part S of signature
 
-  ZKN_ERROR_CLOSE();
+  /* S17: explicit_bzero every secret-bearing stack buffer on EVERY exit
+   * path (success + every ZKN_CHECK-triggered goto). sbuff[64] holds
+   * the derived spending scalar (hi||lo); rbuff[64] holds intermediate
+   * BLAKE-512 nonce material; s_u8[32] is the BE-reversed scalar fed
+   * to the Poseidon state; r_u8[32] is the BE-reversed message word.
+   * Inlines the ZKN_ERROR_CLOSE() macro body so the cleanup is
+   * physically between the `end:` label and the return — both the
+   * success path and the goto-end error path run it.
+   */
+end: __attribute__((unused))
+  explicit_bzero(sbuff, sizeof(sbuff));
+  explicit_bzero(rbuff, sizeof(rbuff));
+  explicit_bzero(s_u8,  sizeof(s_u8));
+  explicit_bzero(r_u8,  sizeof(r_u8));
+  return error;
 }
