@@ -17,8 +17,12 @@ static void compress_rfc(const uint8_t W[65], uint8_t out32[32])
 {
     // Y is at W[33..65] big-endian. Reverse to little-endian.
     for (int i = 0; i < 32; i++) out32[i] = W[64 - i];
-    // X is at W[1..33] big-endian; LSB of X = W[32].
-    if (W[32] & 1) out32[31] |= 0x80;
+    // X is at W[1..33] big-endian; LSB of X = W[32]. Branchless: the parity
+    // of X is a one-bit function of the shared secret point (scalar × VK)
+    // in the ECDH-KDF caller, so a conditional branch here would leak that
+    // bit through instruction-timing / DPA. The keyderivation.c sibling
+    // can keep the branch because its parity ends up in the public output.
+    out32[31] |= (uint8_t)((W[32] & 1u) << 7);
 }
 
 int zkn_ed25519_scalarmul_compressed(const uint8_t *scalar_be32,
