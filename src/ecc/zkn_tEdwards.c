@@ -456,6 +456,13 @@ int tEdwards_Coronize(zkn_edcurve_t *curve, zkn_edpoint_t *G)
   ZKN_ERROR_CLOSE();
 }
 
+/* AUDIT_2026-06-22 ship-blocker: variable-time double-and-add. Gated
+ * behind ZKNOX_DEBUG so it is neither declared (zkn_tEdwards.h) nor
+ * defined in production builds — any accidental reference fails at
+ * compile and link time. Constant-time production paths use
+ * tEdwards_fixedBase_4MSM instead. */
+#ifdef ZKNOX_DEBUG
+
 // naive double and add — NOT constant time
 int tEdwards_scalarMul_bn(zkn_edcurve_t *curve, zkn_edpoint_t *G, zkn_bn_t *k, zkn_edpoint_t *R)
 {
@@ -522,6 +529,8 @@ int tEdwards_scalarMul(zkn_edcurve_t *curve, zkn_edpoint_t *G, const uint8_t *k,
 
   ZKN_ERROR_CLOSE();
 }
+
+#endif /* ZKNOX_DEBUG — closes the variable-time scalarMul* gate above */
 
 /* ================================================================== */
 /*  2MSM — table-based, on-the-fly loading                            */

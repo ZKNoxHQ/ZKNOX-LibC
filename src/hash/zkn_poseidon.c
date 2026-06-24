@@ -41,6 +41,7 @@ int zkn_poseidon_hash(const uint8_t *inputs,
     zkn_bn_mont_ctx_t montctx;
     zkn_poseidon_ctx_t ctx;
     zkn_bn_t modulus;
+    zkn_bn_t input_raw;        /* Scratch: holds the un-reduced 32-B input. */
     zkn_bn_t result;
     bool bn_locked = false;
     bool ctx_inited = false;
@@ -56,8 +57,27 @@ int zkn_poseidon_hash(const uint8_t *inputs,
     if (zkn_poseidon_init(&ctx, 5, nb_inputs, &montctx) != ZKN_OK) goto cleanup;
     ctx_inited = true;
 
+    /* Audit: Poseidon input reduction mod p.
+     *
+     * The on-chain engine (circomlibjs / poseidon-lite) treats inputs as
+     * field elements and reduces them mod p implicitly. Without matching
+     * that on-device, a host can submit a 32-byte word ≥ p (e.g. 2^256 − 1,
+     * or the prime itself) and either (a) two inputs differing by a multiple
+     * of p produce the same digest — silent collision — or (b) the
+     * Montgomery conversion lands the sponge in an undefined state because
+     * cx_mont_to_montgomery's domain is [0, p). Reducing each input with
+     * `zkn_bn_reduce` before feeding it into Montgomery form closes both.
+     *
+     * Some backends (cx_bn_reduce) require distinct source and destination
+     * handles, so we keep a small `input_raw` scratch separate from
+     * `ctx.state[i+1]`. The pool lock above means the scratch goes away
+     * with `zkn_bn_unlock` in cleanup — no per-iteration destroy. */
+    if (zkn_bn_alloc(&input_raw, 32) != ZKN_OK) goto cleanup;
+
     for (size_t i = 0; i < nb_inputs; i++) {
-        if (zkn_bn_init(ctx.state[i + 1], inputs + 32 * i, 32) != ZKN_OK)
+        if (zkn_bn_init(input_raw, inputs + 32 * i, 32) != ZKN_OK)
+            goto cleanup;
+        if (zkn_bn_reduce(ctx.state[i + 1], input_raw, modulus) != ZKN_OK)
             goto cleanup;
         if (zkn_mont_to_montgomery(ctx.state[i + 1],
                                    ctx.state[i + 1], &montctx) != ZKN_OK)

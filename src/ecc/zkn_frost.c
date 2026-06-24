@@ -1,3 +1,7 @@
+/* AUDIT_2026-06-22 (variable-time scalar mul gating): FROST primitives
+ * call tEdwards_scalarMul_bn (variable-time) — now gated behind
+ * ZKNOX_DEBUG. Gate the whole translation unit to match. */
+#ifdef ZKNOX_DEBUG
 
 #include <stdint.h>  // uint*_t
 #include <stdbool.h> // bool
@@ -535,3 +539,5 @@ int zkn_partial_sig(
 
   ZKN_ERROR_CLOSE();
 }
+
+#endif /* ZKNOX_DEBUG — closes the file-level gate at the top */

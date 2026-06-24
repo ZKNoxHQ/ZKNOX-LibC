@@ -88,9 +88,19 @@ int tEdwards_Coronize(zkn_edcurve_t *curve, zkn_edpoint_t *G);
 // normalizing the representative to z=1
 int tEdwards_normalize(zkn_edcurve_t *curve, zkn_edpoint_t *i_R);
 
-// naive double n add, THIS IS not constant TIME : todo: replace with 4MSM
+/* Variable-time naïve double-and-add scalar multiplications.
+ *
+ * NOT CONSTANT TIME — uses k's bit length to decide the loop count and a
+ * data-dependent branch per bit. Production signing paths must use
+ * tEdwards_fixedBase_4MSM (constant-time, table-based). Audit
+ * (AUDIT_2026-06-22, ship-blocker): gated behind ZKNOX_DEBUG so any
+ * accidental reference from production code fails to compile and link.
+ * Surviving callers (FROST + INS_SCALAR_MUL_*) are themselves
+ * ZKNOX_DEBUG-only — see their containing .c files. */
+#ifdef ZKNOX_DEBUG
 int tEdwards_scalarMul_bn(zkn_edcurve_t *curve, zkn_edpoint_t *G, zkn_bn_t *k, zkn_edpoint_t *R);
 int tEdwards_scalarMul(zkn_edcurve_t *curve, zkn_edpoint_t *G, const uint8_t *k, size_t len, zkn_edpoint_t *R);
+#endif
 
 // msm
 int tEdwards_2MSM_precomp_table(zkn_edcurve_t *curve, const uint8_t (*T_mx)[32], const uint8_t (*T_my)[32], const uint8_t *k1, size_t len1, const uint8_t *k2, size_t len2, zkn_edpoint_t *R);
