@@ -1,12 +1,20 @@
-// zkn_bech32m.c — Bech32m decoder for RAILGUN 0zk addresses
+// zkn_bech32m.c — Bech32m encoder/decoder for RAILGUN 0zk addresses
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 ZKNOX
 //
-// Implements BIP-350 bech32m decoding to extract the masterPublicKey
-// from a RAILGUN 0zk address.
+// Implements BIP-350 bech32m. The decoder extracts the masterPublicKey
+// from an incoming 0zk address (OUT_TRANSFER recipient parsing). The
+// encoder reverses the transform so the device can RENDER a canonical
+// `0zk1…` string for user confirmation (S10, AUDIT_2026-06-22).
 
 #include "zkn_bech32m.h"
 #include <string.h>
+
+// All-chains networkID: ff ^ "railgun\0" = 8d 9e 96 93 98 8a 91 ff.
+// See header for rationale.
+const uint8_t ZKN_NETWORK_ALLCHAINS_ID[ZKN_NETWORK_ID_LEN] = {
+    0x8d, 0x9e, 0x96, 0x93, 0x98, 0x8a, 0x91, 0xff
+};
 
 // Bech32 charset: "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
 // Maps character → 5-bit value. -1 = invalid.
@@ -132,5 +140,81 @@ int zkn_0zk_decode_mpk(const uint8_t *addr, size_t addr_len, uint8_t *mpk_out)
         return -5;  // Decoded data too short
 
     memcpy(mpk_out, decoded + ZKN_0ZK_MPK_OFFSET, ZKN_0ZK_MPK_LEN);
+    return 0;
+}
+
+// ── Encoder ────────────────────────────────────────────────────────────
+
+// Forward charset: 5-bit value → ASCII char. Inverse of CHARSET_REV.
+static const char CHARSET[32] = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+
+// Convert 8-bit bytes to 5-bit words. Inverse of `convert_5to8`. Pads the
+// final word with zero bits when the input bit-length isn't a multiple of 5.
+// For the 0zk payload (73 B = 584 bits) the output is exactly 117 words
+// (584 / 5 = 116 rem 4 → last word holds 4 data bits and 1 zero pad bit).
+static int convert_8to5(const uint8_t *in, size_t in_len,
+                        uint8_t *out, size_t *out_len)
+{
+    uint32_t acc = 0;
+    int bits = 0;
+    size_t pos = 0;
+
+    for (size_t i = 0; i < in_len; i++) {
+        acc = (acc << 8) | in[i];
+        bits += 8;
+        while (bits >= 5) {
+            bits -= 5;
+            out[pos++] = (acc >> bits) & 0x1f;
+        }
+    }
+    if (bits > 0)
+        out[pos++] = (acc << (5 - bits)) & 0x1f;
+
+    *out_len = pos;
+    return 0;
+}
+
+int zkn_0zk_encode(const uint8_t payload[ZKN_0ZK_DECODED_LEN],
+                   uint8_t out127[ZKN_0ZK_STRING_LEN])
+{
+    if (payload == NULL || out127 == NULL)
+        return -1;
+
+    const char *hrp = "0zk";
+    const size_t hrp_len = 3;
+
+    // 73 bytes → 117 5-bit words.
+    uint8_t words5[117];
+    size_t words5_len = 0;
+    if (convert_8to5(payload, ZKN_0ZK_DECODED_LEN, words5, &words5_len) != 0)
+        return -2;
+    if (words5_len != 117)
+        return -3;
+
+    // Bech32m checksum: polymod over hrp_expand(hrp) || words5 || 6 zero
+    // pad words; XOR result with BECH32M_CONST; split into 6 5-bit chunks.
+    // Layout matches the decoder's checksum verification (mirror form).
+    uint8_t chk_input[7 + 117 + 6];
+    size_t hrp_exp_len = hrp_expand(hrp, hrp_len, chk_input);
+    memcpy(chk_input + hrp_exp_len, words5, words5_len);
+    memset(chk_input + hrp_exp_len + words5_len, 0, 6);
+
+    uint32_t polymod = bech32_polymod(chk_input,
+                                      hrp_exp_len + words5_len + 6) ^ BECH32M_CONST;
+
+    uint8_t checksum5[6];
+    for (int i = 0; i < 6; i++)
+        checksum5[i] = (uint8_t)((polymod >> (5 * (5 - i))) & 0x1f);
+
+    // Compose: "0zk1" || 117 data chars || 6 checksum chars = 127.
+    out127[0] = '0';
+    out127[1] = 'z';
+    out127[2] = 'k';
+    out127[3] = '1';
+    for (size_t i = 0; i < 117; i++)
+        out127[4 + i] = (uint8_t)CHARSET[words5[i]];
+    for (size_t i = 0; i < 6; i++)
+        out127[4 + 117 + i] = (uint8_t)CHARSET[checksum5[i]];
+
     return 0;
 }
