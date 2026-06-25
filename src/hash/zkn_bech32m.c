@@ -146,7 +146,12 @@ int zkn_0zk_decode_mpk(const uint8_t *addr, size_t addr_len, uint8_t *mpk_out)
 // ── Encoder ────────────────────────────────────────────────────────────
 
 // Forward charset: 5-bit value → ASCII char. Inverse of CHARSET_REV.
-static const char CHARSET[32] = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+// Sized as `[]` (33 incl. NUL) rather than `[32]` so the literal's
+// auto-appended NUL fits and the compiler doesn't trip the
+// -Wunterminated-string-initialization warning. We only index
+// CHARSET[0..31]; the trailing NUL costs one byte of rodata and goes
+// unread.
+static const char CHARSET[] = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
 
 // Convert 8-bit bytes to 5-bit words. Inverse of `convert_5to8`. Pads the
 // final word with zero bits when the input bit-length isn't a multiple of 5.

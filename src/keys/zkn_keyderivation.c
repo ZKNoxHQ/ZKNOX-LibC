@@ -280,12 +280,24 @@ cleanup:
     {
         tEdwards_Curve_destroy(&curve);
     }
+
+    // AUDIT_2026-06-22 (medium): zero priv_copy BEFORE releasing the
+    // cx_bn pool lock. priv_copy is a stack array (not a BN handle) so
+    // today the order doesn't matter — `zkn_bn_unlock` doesn't touch
+    // stack memory. But if a future refactor stages the private key
+    // through the pool (the standard idiom for keeping secrets out of
+    // stack frames between operations), `zkn_bn_unlock` would erase the
+    // pool and a subsequent explicit_bzero would no-op on a slot that
+    // was already implicitly wiped. Zeroing first keeps the invariant
+    // "secret material is dead before pool state is released" intact
+    // across both arrangements.
+    explicit_bzero(priv_copy, sizeof(priv_copy));
+
     if (bn_locked)
     {
         zkn_bn_unlock();
     }
 
-    explicit_bzero(priv_copy, sizeof(priv_copy));
     return err;
 }
 
