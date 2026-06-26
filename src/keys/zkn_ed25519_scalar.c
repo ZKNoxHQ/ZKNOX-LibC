@@ -23,7 +23,7 @@ int zkn_ed25519_scalar_from_seed(const uint8_t *seed32, uint8_t *scalar_out)
 {
     uint8_t hash[64];
     uint8_t reversed_be[32];
-    cx_bn_t bn_scalar = 0, bn_L = 0, bn_result = 0;
+    cx_bn_t bn_scalar, bn_L, bn_result;
     int rc = -1;
     bool bn_locked = false;
 
@@ -44,16 +44,21 @@ int zkn_ed25519_scalar_from_seed(const uint8_t *seed32, uint8_t *scalar_out)
     bn_locked = true;
 
     if (cx_bn_alloc_init(&bn_scalar, 32, reversed_be, 32) != CX_OK) goto out;
-    if (cx_bn_alloc_init(&bn_L, 32, L_BE, 32) != CX_OK) goto out;
+    if (cx_bn_alloc_init(&bn_L,      32, L_BE,        32) != CX_OK) goto out;
     if (cx_bn_alloc(&bn_result, 32) != CX_OK) goto out;
     if (cx_bn_reduce(bn_result, bn_scalar, bn_L) != CX_OK) goto out;
     if (cx_bn_export(bn_result, scalar_out, 32) != CX_OK) goto out;
 
     rc = 0;
 out:
-    if (bn_result) (void)cx_bn_destroy(&bn_result);
-    if (bn_L)      (void)cx_bn_destroy(&bn_L);
-    if (bn_scalar) (void)cx_bn_destroy(&bn_scalar);
+    /* AUDIT_2026-06-22 (medium): align cleanup idiom with the project
+     * standard (see zkn_poseidon.c::zkn_poseidon_hash). cx_bn_unlock
+     * erases the whole pool, so per-handle cx_bn_destroy calls are
+     * redundant; trying to destroy a half-written handle on the failure
+     * path (cx_bn_alloc_init may write the out-handle before deciding
+     * to fail) corrupts the pool. Drop the per-handle destroys and let
+     * the unlock be the single source of truth — same as every other
+     * cleanup label in the codebase. */
     if (bn_locked) (void)cx_bn_unlock();
     explicit_bzero(hash, sizeof(hash));
     explicit_bzero(reversed_be, sizeof(reversed_be));
