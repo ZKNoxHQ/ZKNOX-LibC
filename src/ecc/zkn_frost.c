@@ -1,6 +1,6 @@
-/* AUDIT_2026-06-22 (variable-time scalar mul gating): FROST primitives
- * call tEdwards_scalarMul_bn (variable-time) — now gated behind
- * ZKNOX_DEBUG. Gate the whole translation unit to match. */
+/* FROST primitives call tEdwards_scalarMul_bn (variable-time) which
+ * is gated behind ZKNOX_DEBUG — gate the whole translation unit to
+ * match. */
 #ifdef ZKNOX_DEBUG
 
 #include <stdint.h>  // uint*_t

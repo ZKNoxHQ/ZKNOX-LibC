@@ -51,14 +51,12 @@ int zkn_ed25519_scalar_from_seed(const uint8_t *seed32, uint8_t *scalar_out)
 
     rc = 0;
 out:
-    /* AUDIT_2026-06-22 (medium): align cleanup idiom with the project
-     * standard (see zkn_poseidon.c::zkn_poseidon_hash). cx_bn_unlock
-     * erases the whole pool, so per-handle cx_bn_destroy calls are
-     * redundant; trying to destroy a half-written handle on the failure
-     * path (cx_bn_alloc_init may write the out-handle before deciding
-     * to fail) corrupts the pool. Drop the per-handle destroys and let
-     * the unlock be the single source of truth — same as every other
-     * cleanup label in the codebase. */
+    /* cx_bn_unlock erases the whole pool, so per-handle cx_bn_destroy
+     * calls are redundant on success — and destroying a half-written
+     * handle on the failure path (cx_bn_alloc_init may write the
+     * out-handle before deciding to fail) corrupts the pool. Let the
+     * unlock be the single source of truth — same idiom as
+     * zkn_poseidon.c::zkn_poseidon_hash. */
     if (bn_locked) (void)cx_bn_unlock();
     explicit_bzero(hash, sizeof(hash));
     explicit_bzero(reversed_be, sizeof(reversed_be));

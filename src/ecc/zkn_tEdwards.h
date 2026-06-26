@@ -90,13 +90,14 @@ int tEdwards_normalize(zkn_edcurve_t *curve, zkn_edpoint_t *i_R);
 
 /* Variable-time naïve double-and-add scalar multiplications.
  *
- * NOT CONSTANT TIME — uses k's bit length to decide the loop count and a
- * data-dependent branch per bit. Production signing paths must use
- * tEdwards_fixedBase_4MSM (constant-time, table-based). Audit
- * (AUDIT_2026-06-22, ship-blocker): gated behind ZKNOX_DEBUG so any
- * accidental reference from production code fails to compile and link.
- * Surviving callers (FROST + INS_SCALAR_MUL_*) are themselves
- * ZKNOX_DEBUG-only — see their containing .c files. */
+ * NOT CONSTANT TIME — uses k's bit length to decide the loop count and
+ * a data-dependent branch per bit. Production signing paths must use
+ * tEdwards_fixedBase_4MSM (constant-time, table-based).
+ *
+ * Gated behind ZKNOX_DEBUG so any accidental reference from production
+ * code fails to compile (declaration absent) and link (definition
+ * absent). Surviving callers (FROST + INS_SCALAR_MUL_*) live in
+ * ZKNOX_DEBUG-only translation units — see their containing .c files. */
 #ifdef ZKNOX_DEBUG
 int tEdwards_scalarMul_bn(zkn_edcurve_t *curve, zkn_edpoint_t *G, zkn_bn_t *k, zkn_edpoint_t *R);
 int tEdwards_scalarMul(zkn_edcurve_t *curve, zkn_edpoint_t *G, const uint8_t *k, size_t len, zkn_edpoint_t *R);

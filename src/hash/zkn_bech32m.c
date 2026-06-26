@@ -5,7 +5,7 @@
 // Implements BIP-350 bech32m. The decoder extracts the masterPublicKey
 // from an incoming 0zk address (OUT_TRANSFER recipient parsing). The
 // encoder reverses the transform so the device can RENDER a canonical
-// `0zk1…` string for user confirmation (S10, AUDIT_2026-06-22).
+// `0zk1…` string for user confirmation.
 
 #include "zkn_bech32m.h"
 #include <string.h>
