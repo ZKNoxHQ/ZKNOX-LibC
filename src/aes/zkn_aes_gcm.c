@@ -24,8 +24,10 @@ int zkn_aes256_gcm_encrypt(const uint8_t *key32,
 
     // cx_aes_gcm_encrypt_and_tag takes `in` as non-const (it may operate
     // in-place); copy to a scratch buffer so we keep the const-correct API.
-    // Plaintext for RAILGUN notes is 96 B, well under any stack budget.
-    uint8_t scratch[96];
+    // RAILGUN V2 transact-note plaintext is up to 96 B (note) + 32 B (memo)
+    // = 128 B when the memo path is exercised (engine concatenates the
+    // encoded memo onto the GCM input as a 4th block).
+    uint8_t scratch[128];
     if (plaintext_len > sizeof(scratch)) goto out;
     memcpy(scratch, plaintext, plaintext_len);
 
