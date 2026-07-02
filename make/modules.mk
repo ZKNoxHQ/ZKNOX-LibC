@@ -69,8 +69,6 @@ SRCS_EDDSA     := src/ecc/zkn_eddsa.c
 SRCS_FROST     := src/ecc/zkn_frost.c \
                   src/ecc/zkn_vss.c
 
-# Babyfrost protocol wrapper (test infrastructure)
-SRCS_THRESHOLD := src/threshold/babyfrost.c
 
 # Ledger BIP32 key derivation (Ledger-only)
 SRCS_KEYS      := src/keys/zkn_keyderivation.c \
