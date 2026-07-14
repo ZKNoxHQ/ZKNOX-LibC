@@ -8,13 +8,47 @@
 #include "zkn_errors.h"
 #include "zkn_common.h"
 
+/* R256 = 2^256 mod L  (L = BabyJubjub prime subgroup order), big-endian.
+ * Lets us reduce the FULL 64-byte blake digest so the C matches the JS
+ * reference (curves-lite): H = reduce_L( LE(digest[0:64]) ), instead of only
+ * the low 32 bytes (which the 256-bit bn type previously kept). */
+static const uint8_t RFC9591_R256_BE[32] = {
+  0x01, 0xf1, 0x64, 0x24, 0xe1, 0xbb, 0x77, 0x24, 0xf8, 0x5a, 0x92, 0x01, 0xd8, 0x18, 0xf0, 0x15,
+  0xe7, 0xac, 0xff, 0xc6, 0xa0, 0x98, 0xf2, 0x4b, 0x07, 0x33, 0x15, 0xde, 0xa0, 0x8f, 0x9c, 0x76};
+
+/* Reduce a full 512-bit digest (passed AFTER the whole-buffer byteswap)
+ * modulo `order`, matching the JS full-width little-endian reduction.
+ *   lo = BE(swapped[32:64]) = LE(digest[0:32])
+ *   hi = BE(swapped[0:32])  = LE(digest[32:64])
+ *   H  = (lo + hi * 2^256) mod order                                        */
+static int rfc9591_reduce_wide(const uint8_t *swapped, zkn_bn_t order, zkn_bn_t H)
+{
+  ZKN_ERROR_INIT();
+  zkn_bn_t lo, hi, r256, lo_r, hi_r, prod;
+  ZKN_CHECK(zkn_bn_alloc_init(&lo, 32, swapped + 32, 32));
+  ZKN_CHECK(zkn_bn_alloc_init(&hi, 32, swapped, 32));
+  ZKN_CHECK(zkn_bn_alloc_init(&r256, 32, RFC9591_R256_BE, 32));
+  ZKN_CHECK(zkn_bn_alloc(&lo_r, 32));
+  ZKN_CHECK(zkn_bn_alloc(&hi_r, 32));
+  ZKN_CHECK(zkn_bn_alloc(&prod, 32));
+  ZKN_CHECK(zkn_bn_reduce(lo_r, lo, order));          // lo mod order
+  ZKN_CHECK(zkn_bn_reduce(hi_r, hi, order));          // hi mod order
+  ZKN_CHECK(zkn_bn_mod_mul(prod, hi_r, r256, order)); // hi * 2^256 mod order
+  ZKN_CHECK(zkn_bn_mod_add(H, lo_r, prod, order));    // (lo + hi*2^256) mod order
+  ZKN_CHECK(zkn_bn_destroy(&lo));
+  ZKN_CHECK(zkn_bn_destroy(&hi));
+  ZKN_CHECK(zkn_bn_destroy(&r256));
+  ZKN_CHECK(zkn_bn_destroy(&lo_r));
+  ZKN_CHECK(zkn_bn_destroy(&hi_r));
+  ZKN_CHECK(zkn_bn_destroy(&prod));
+  ZKN_ERROR_CLOSE();
+}
+
 int RFC9591_taggedHash(const uint8_t *tag, size_t taglen, const uint8_t *msg, size_t msglen, zkn_bn_t order, zkn_bn_t H)
 {
   ZKN_ERROR_INIT();
-  zkn_bn_t tmp;
 
   uint8_t out[64];
-  ZKN_CHECK(zkn_bn_alloc(&tmp, 64));
   uint8_t tmp2;
 
   zkn_blake2b_t state;
@@ -35,11 +69,7 @@ int RFC9591_taggedHash(const uint8_t *tag, size_t taglen, const uint8_t *msg, si
     out[63 - i] = tmp2;
   }
 
-  ZKN_CHECK(zkn_bn_init(tmp, out, 64));
-
-  ZKN_CHECK(zkn_bn_reduce(H, tmp, order)); // reduce cannot be used in place ?
-
-  ZKN_CHECK(zkn_bn_destroy(&tmp));
+  ZKN_CHECK(rfc9591_reduce_wide(out, order, H)); // full 64-byte reduction (matches JS reference)
 
   ZKN_ERROR_CLOSE();
 }
@@ -154,9 +184,7 @@ int zkn_frost_hash_update(zkn_hash_t *state, uint8_t *msg, size_t msglen)
 int zkn_frost_hash_final(zkn_hash_t *state, zkn_bn_t order, zkn_bn_t H)
 {
   ZKN_ERROR_INIT();
-  zkn_bn_t tmp;
   uint8_t out[64];
-  ZKN_CHECK(zkn_bn_alloc(&tmp, 64));
   uint8_t tmp2;
 
   ZKN_CHECK(zkn_hash_final(state, out)); // obtain blake512(payload) with 32 output bytes
@@ -168,9 +196,7 @@ int zkn_frost_hash_final(zkn_hash_t *state, zkn_bn_t order, zkn_bn_t H)
     out[63 - i] = tmp2;
   }
 
-  ZKN_CHECK(zkn_bn_init(tmp, out, 64));
-  ZKN_CHECK(zkn_bn_reduce(H, tmp, order)); // reduce cannot be used in place ?
-  ZKN_CHECK(zkn_bn_destroy(&tmp));
+  ZKN_CHECK(rfc9591_reduce_wide(out, order, H)); // full 64-byte reduction (matches JS reference)
 
   ZKN_ERROR_CLOSE();
 }
