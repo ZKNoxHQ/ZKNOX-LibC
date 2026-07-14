@@ -45,11 +45,34 @@ int zkn_partial_sig(
     // provided by the APDU
     uint8_t *commitment_list,
     size_t len, // size of commitment list
-    uint8_t *msg_be,
+    uint8_t *msg_le,
     size_t msglen, // msgsize
 
     // lambda_i, to be computed instead
     uint8_t *lambda_i,
     uint8_t *sig);
+
+#ifndef ZKN_FROST_MAX_SIGNERS
+#define ZKN_FROST_MAX_SIGNERS 16
+#endif
+
+// High-level FROST API (mirrors curves-lite/babyfrost.ts).
+// groupkey_be and R8_be are 64-byte x||y (big-endian); scalars are 32-byte BE.
+
+// aggregate partial signature shares -> (R8, S)
+int zkn_frost_aggregate(zkn_edcurve_t *curve, uint8_t *groupkey_be,
+                        uint8_t *commitment_list, size_t len,
+                        uint8_t *msg_le, size_t msglen,
+                        uint8_t *sig_shares, uint8_t *R8_be, uint8_t *S);
+
+// verify a single partial signature share; sets *valid to 0/1
+int zkn_frost_verify_share(zkn_edcurve_t *curve, size_t identifier, uint8_t *sk_be,
+                           uint8_t *commitment_i, uint8_t *sig_share,
+                           uint8_t *commitment_list, size_t len,
+                           uint8_t *groupkey_be, uint8_t *msg_le, size_t msglen, int *valid);
+
+// verify the aggregate signature (verifyPoseidon: S·G == R8 + 8·hm·A); sets *valid
+int zkn_frost_verify(zkn_edcurve_t *curve, uint8_t *R8_be, uint8_t *S,
+                     uint8_t *groupkey_be, uint8_t *msg_le, size_t msglen, int *valid);
 
 #endif

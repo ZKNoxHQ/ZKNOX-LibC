@@ -17,6 +17,25 @@
 #include "zkn_rfc9591frost.h"
 #include "zkn_frost.h"
 
+/* Pack the group public key the way H1 (binding factors) expects it:
+ * y in big-endian, parity bit of x folded into the top bit (applied once).
+ * Single source of truth, shared by zkn_partial_sig and the verify helpers. */
+static void zkn_frost_pack_groupkey(const uint8_t *groupkey_be, uint8_t *out)
+{
+  for (size_t i = 0; i < 32; i++) out[i] = groupkey_be[i + 32];
+  out[0] ^= (groupkey_be[31] & 1) << 7;
+}
+
+/* Extract the `len` participant identifiers (first field element of each
+ * commitment-list entry, big-endian) as bn scalars. */
+static int zkn_frost_ids_from_list(uint8_t *commitment_list, size_t len, zkn_bn_t *ids_out)
+{
+  ZKN_ERROR_INIT();
+  for (size_t i = 0; i < len; i++)
+    ZKN_CHECK(zkn_bn_alloc_init(&ids_out[i], 32, commitment_list + i * 5 * 32, 32));
+  ZKN_ERROR_CLOSE();
+}
+
 // Lagrangian interpolation in 0= prod(x_i)/prod(xj-xi)
 int zkn_frost_interpolate(zkn_bn_t *L, size_t len, zkn_bn_t x_i, zkn_bn_t modulus, zkn_bn_t result)
 {
@@ -434,7 +453,10 @@ int compute_challenge(zkn_edcurve_t *curve, zkn_edpoint_t *group_commitment, uin
   ZKN_CHECK(zkn_mont_to_montgomery(Ctx.state[3], Ctx.state[3], &curve->ctx)); // montgomerization
   ZKN_CHECK(zkn_bn_init(Ctx.state[4], group_public_key_be + 32, curve->fieldsize8));
   ZKN_CHECK(zkn_mont_to_montgomery(Ctx.state[4], Ctx.state[4], &curve->ctx)); // montgomerization
-  ZKN_CHECK(zkn_bn_init(Ctx.state[5], msg, msglen));                          // init state5 with message
+  uint8_t msg_be[32]; // circomlib message is little-endian; reverse to recover the field element
+  for (size_t i = 0; i < msglen; i++)
+    msg_be[i] = msg[msglen - 1 - i];
+  ZKN_CHECK(zkn_bn_init(Ctx.state[5], msg_be, msglen));                        // init state5 with message (LE)
   ZKN_CHECK(zkn_mont_to_montgomery(Ctx.state[5], Ctx.state[5], &curve->ctx)); // montgomerize message
 
   ZKN_CHECK(tEdwards_destroy(curve, group_commitment)); // spare memory
@@ -463,7 +485,7 @@ int zkn_partial_sig(
     // provided by the APDU
     uint8_t *commitment_list,
     size_t len, // size of commitment list
-    uint8_t *msg_be,
+    uint8_t *msg_le, // message little-endian (circomlib)
     size_t msglen, // msgsize
 
     // lambda_i, to be computed instead
@@ -476,15 +498,11 @@ int zkn_partial_sig(
   zkn_bn_t H;
 
   uint8_t binding_factors[32 * 3];
-  uint8_t msg_le[32];
   uint8_t groupkey_compressed[32];
 
-  for (size_t i = 0; i < 32; i++)
-  {
-    msg_le[i] = msg_be[31 - i];
-    groupkey_compressed[i] = groupkey_be[i + 32];
-    groupkey_compressed[0] ^= (groupkey_be[31] & 1)<<7; // parity bit of x in highest bit of y
-  }
+  // msg_le is the little-endian (circomlib) encoding of the message field element,
+  // used directly for both binding factors and the challenge.
+  zkn_frost_pack_groupkey(groupkey_be, groupkey_compressed); // y_be with x parity in top bit
 
   ZKN_CHECK(zkn_bn_alloc(&H, 32));
 
@@ -493,7 +511,7 @@ int zkn_partial_sig(
   ZKN_CHECK(zkn_compute_binding_factors(curve, groupkey_compressed, commitment_list, len, msg_le, msglen, binding_factors));
   ZKN_CHECK(zkn_compute_group_commitment(curve, commitment_list, binding_factors, len, &group_commitment));
 
-  ZKN_CHECK(compute_challenge(curve, &group_commitment, groupkey_be, msg_be, 32, H));
+  ZKN_CHECK(compute_challenge(curve, &group_commitment, groupkey_be, msg_le, 32, H));
 
   ZKN_CHECK(zkn_bn_export(H, sig, 32));
 
@@ -537,6 +555,182 @@ int zkn_partial_sig(
 
   ZKN_CHECK(zkn_bn_export(H, sig, 32));
 
+  ZKN_ERROR_CLOSE();
+}
+
+/* ───────────────────────── high-level FROST API ─────────────────────────
+ * aggregate / verify_share / verify — mirror curves-lite/babyfrost.ts.
+ * groupkey_be and R8_be are 64-byte x||y (big-endian); scalars are 32-byte BE.
+ * These allocate a fresh curve internally for compute_challenge (which is
+ * destructive), leaving the caller's `curve` usable for the elliptic ops.   */
+
+static int zkn_frost_points_equal(zkn_edcurve_t *curve, zkn_edpoint_t *P, zkn_edpoint_t *Q, int *equal)
+{
+  ZKN_ERROR_INIT();
+  uint8_t px[32], py[32], qx[32], qy[32];
+  ZKN_CHECK(tEdwards_export(curve, P, px, py));
+  ZKN_CHECK(tEdwards_export(curve, Q, qx, qy));
+  *equal = (memcmp(px, qx, 32) == 0 && memcmp(py, qy, 32) == 0);
+  ZKN_ERROR_CLOSE();
+}
+
+/* challenge hm = poseidon5(R8x,R8y,Ax,Ay,msg), computed on a throwaway curve. */
+static int zkn_frost_challenge(uint8_t *R8_be, uint8_t *groupkey_be,
+                               uint8_t *msg_le, size_t msglen, zkn_bn_t hm)
+{
+  ZKN_ERROR_INIT();
+  zkn_edcurve_t cc;
+  zkn_edpoint_t R8;
+  ZKN_CHECK(tEdwards_Curve_alloc_init(&cc, _BABYJUJUB_ID));
+  ZKN_CHECK(tEdwards_alloc(&cc, &R8));
+  ZKN_CHECK(tEdwards_init(&cc, R8_be, R8_be + 32, &R8));
+  ZKN_CHECK(compute_challenge(&cc, &R8, groupkey_be, msg_le, msglen, hm));
+  /* cc is partial-destroyed by compute_challenge; do not Curve_destroy */
+  ZKN_ERROR_CLOSE();
+}
+
+/* frost.aggregate: (R8, S) from the partial signature shares. */
+int zkn_frost_aggregate(zkn_edcurve_t *curve, uint8_t *groupkey_be,
+                        uint8_t *commitment_list, size_t len,
+                        uint8_t *msg_le, size_t msglen,
+                        uint8_t *sig_shares, uint8_t *R8_be, uint8_t *S)
+{
+  ZKN_ERROR_INIT();
+  uint8_t gk[32];
+  uint8_t bfs[ZKN_FROST_MAX_SIGNERS * 32];
+  zkn_edpoint_t R8;
+  zkn_bn_t acc, zi;
+
+  zkn_frost_pack_groupkey(groupkey_be, gk);
+
+  ZKN_CHECK(zkn_compute_binding_factors(curve, gk, commitment_list, len, msg_le, msglen, bfs));
+  ZKN_CHECK(tEdwards_alloc(curve, &R8));
+  ZKN_CHECK(zkn_compute_group_commitment(curve, commitment_list, bfs, len, &R8));
+  ZKN_CHECK(tEdwards_export(curve, &R8, R8_be, R8_be + 32));
+
+  ZKN_CHECK(zkn_bn_alloc(&acc, 32));
+  ZKN_CHECK(zkn_bn_set_u32(acc, 0));
+  ZKN_CHECK(zkn_bn_alloc(&zi, 32));
+  for (size_t i = 0; i < len; i++)
+  {
+    ZKN_CHECK(zkn_bn_init(zi, sig_shares + i * 32, 32));
+    ZKN_CHECK(zkn_bn_mod_add(acc, acc, zi, curve->order));
+  }
+  ZKN_CHECK(zkn_bn_export(acc, S, 32));
+  ZKN_ERROR_CLOSE();
+}
+
+/* frost.verifySignatureShare: check one partial signature.
+ *   z_i·G  ==  (hiding_i + bf_i·binding_i) + (lambda_i·sk_i·challenge)·G      */
+int zkn_frost_verify_share(zkn_edcurve_t *curve, size_t identifier, uint8_t *sk_be,
+                           uint8_t *commitment_i, uint8_t *sig_share,
+                           uint8_t *commitment_list, size_t len,
+                           uint8_t *groupkey_be, uint8_t *msg_le, size_t msglen, int *valid)
+{
+  ZKN_ERROR_INIT();
+  uint8_t gk[32], R8_be[64], chal_be[32], rs_be[32];
+  uint8_t bfs[ZKN_FROST_MAX_SIGNERS * 32];
+  zkn_bn_t ids[ZKN_FROST_MAX_SIGNERS];
+  zkn_edpoint_t H, B, BM, CS, LEFT, RSG, RIGHT, R8;
+  zkn_bn_t hm, chal, lam, bn_sk, t, rs;
+  size_t idx = 0;
+
+  zkn_frost_pack_groupkey(groupkey_be, gk);
+
+  /* binding factors, and index of `identifier` in the list */
+  ZKN_CHECK(zkn_compute_binding_factors(curve, gk, commitment_list, len, msg_le, msglen, bfs));
+  for (size_t i = 0; i < len; i++)
+  {
+    zkn_bn_t id_i;
+    ZKN_CHECK(zkn_bn_alloc_init(&id_i, 32, commitment_list + i * 5 * 32, 32));
+    uint8_t idb[32];
+    ZKN_CHECK(zkn_bn_export(id_i, idb, 32));
+    ZKN_CHECK(zkn_bn_destroy(&id_i));
+    int match = 1;
+    for (int b = 0; b < 28; b++) if (idb[b]) { match = 0; break; }
+    if (match && ((size_t)((idb[28] << 24) | (idb[29] << 16) | (idb[30] << 8) | idb[31]) == identifier)) { idx = i; break; }
+  }
+
+  /* commitmentShare = hiding_i + bf_i · binding_i */
+  ZKN_CHECK(tEdwards_alloc(curve, &H));
+  ZKN_CHECK(tEdwards_alloc(curve, &B));
+  ZKN_CHECK(tEdwards_alloc(curve, &BM));
+  ZKN_CHECK(tEdwards_alloc(curve, &CS));
+  ZKN_CHECK(tEdwards_alloc(curve, &LEFT));
+  ZKN_CHECK(tEdwards_alloc(curve, &RSG));
+  ZKN_CHECK(tEdwards_alloc(curve, &RIGHT));
+  ZKN_CHECK(tEdwards_init(curve, commitment_i + 1 * 32, commitment_i + 2 * 32, &H));
+  ZKN_CHECK(tEdwards_init(curve, commitment_i + 3 * 32, commitment_i + 4 * 32, &B));
+  ZKN_CHECK(tEdwards_scalarMul(curve, &B, bfs + idx * 32, 32, &BM));
+  ZKN_CHECK(tEdwards_add(curve, &H, &BM, &CS));
+
+  /* leftSide = z_i · G */
+  ZKN_CHECK(tEdwards_scalarMul(curve, &curve->G, sig_share, 32, &LEFT));
+
+  /* challenge mod order (recompute R8 on the caller curve first) */
+  ZKN_CHECK(tEdwards_alloc(curve, &R8));
+  ZKN_CHECK(zkn_compute_group_commitment(curve, commitment_list, bfs, len, &R8));
+  ZKN_CHECK(tEdwards_export(curve, &R8, R8_be, R8_be + 32));
+  ZKN_CHECK(zkn_bn_alloc(&hm, 32));
+  ZKN_CHECK(zkn_frost_challenge(R8_be, groupkey_be, msg_le, msglen, hm));
+  ZKN_CHECK(zkn_bn_alloc(&chal, 32));
+  ZKN_CHECK(zkn_bn_reduce(chal, hm, curve->order));
+  ZKN_CHECK(zkn_bn_export(chal, chal_be, 32));
+
+  /* rightScalar = lambda_i · sk_i · challenge */
+  ZKN_CHECK(zkn_frost_ids_from_list(commitment_list, len, ids));
+  ZKN_CHECK(zkn_bn_alloc(&lam, 32));
+  {
+    zkn_bn_t x_i;
+    ZKN_CHECK(zkn_bn_alloc_init(&x_i, 32, commitment_i, 32));
+    ZKN_CHECK(zkn_frost_interpolate(ids, len, x_i, curve->order, lam));
+    ZKN_CHECK(zkn_bn_destroy(&x_i));
+  }
+  ZKN_CHECK(zkn_bn_alloc_init(&bn_sk, 32, sk_be, 32));
+  ZKN_CHECK(zkn_bn_alloc(&t, 32));
+  ZKN_CHECK(zkn_bn_alloc(&rs, 32));
+  ZKN_CHECK(zkn_bn_mod_mul(t, lam, bn_sk, curve->order));
+  ZKN_CHECK(zkn_bn_mod_mul(rs, t, chal, curve->order));
+  ZKN_CHECK(zkn_bn_export(rs, rs_be, 32));
+
+  /* rightSide = commitmentShare + rightScalar · G */
+  ZKN_CHECK(tEdwards_scalarMul(curve, &curve->G, rs_be, 32, &RSG));
+  ZKN_CHECK(tEdwards_add(curve, &CS, &RSG, &RIGHT));
+
+  ZKN_CHECK(zkn_frost_points_equal(curve, &LEFT, &RIGHT, valid));
+  ZKN_ERROR_CLOSE();
+}
+
+/* verifyPoseidon: S·G == R8 + (8·hm)·A,  hm = poseidon5(R8x,R8y,Ax,Ay,msg). */
+int zkn_frost_verify(zkn_edcurve_t *curve, uint8_t *R8_be, uint8_t *S,
+                     uint8_t *groupkey_be, uint8_t *msg_le, size_t msglen, int *valid)
+{
+  ZKN_ERROR_INIT();
+  uint8_t k_be[32];
+  zkn_bn_t hm, eight, k;
+  zkn_edpoint_t A, R8, kA, LEFT, RIGHT;
+
+  ZKN_CHECK(zkn_bn_alloc(&hm, 32));
+  ZKN_CHECK(zkn_frost_challenge(R8_be, groupkey_be, msg_le, msglen, hm));
+  ZKN_CHECK(zkn_bn_alloc(&eight, 32));
+  ZKN_CHECK(zkn_bn_set_u32(eight, 8));
+  ZKN_CHECK(zkn_bn_alloc(&k, 32));
+  ZKN_CHECK(zkn_bn_mod_mul(k, hm, eight, curve->order)); // (8·hm) mod order
+  ZKN_CHECK(zkn_bn_export(k, k_be, 32));
+
+  ZKN_CHECK(tEdwards_alloc(curve, &A));
+  ZKN_CHECK(tEdwards_alloc(curve, &R8));
+  ZKN_CHECK(tEdwards_alloc(curve, &kA));
+  ZKN_CHECK(tEdwards_alloc(curve, &LEFT));
+  ZKN_CHECK(tEdwards_alloc(curve, &RIGHT));
+  ZKN_CHECK(tEdwards_init(curve, groupkey_be, groupkey_be + 32, &A));
+  ZKN_CHECK(tEdwards_init(curve, R8_be, R8_be + 32, &R8));
+
+  ZKN_CHECK(tEdwards_scalarMul(curve, &curve->G, S, 32, &LEFT)); // S·G
+  ZKN_CHECK(tEdwards_scalarMul(curve, &A, k_be, 32, &kA));       // (8hm)·A
+  ZKN_CHECK(tEdwards_add(curve, &R8, &kA, &RIGHT));              // R8 + (8hm)·A
+
+  ZKN_CHECK(zkn_frost_points_equal(curve, &LEFT, &RIGHT, valid));
   ZKN_ERROR_CLOSE();
 }
 
