@@ -70,9 +70,24 @@ ifeq ($(WITH_MPT),1)
   # mpt is .h-only for now; nothing to add to SRCS
   CFLAGS += -DZKN_WITH_MPT
 endif
+# ── keys/ + aes/ : comms crypto (Ed25519 ECDH-KDF, AES-256-GCM) ──────
+# Both backends expose the SAME API (zkn_ed25519_ecdh.h, zkn_aes_gcm.h):
+#   ZKN_BN_BACKEND_SW      → software (src/sw_crypto/, host-testable)
+#   ZKN_BN_BACKEND_LEDGER  → BOLOS cx_* syscalls (device/Speculos only)
+SRCS_SW_CRYPTO := src/sw_crypto/zkn_sha256_sw.c   \
+                  src/sw_crypto/zkn_sha512_sw.c   \
+                  src/sw_crypto/zkn_ed25519_sw.c  \
+                  src/sw_crypto/zkn_aes_gcm_sw.c
+SRCS_KEYS_SW   := src/keys/zkn_ed25519_ecdh_sw.c
+SRCS_AES_SW    := src/aes/zkn_aes_gcm_sw_backend.c
+SRCS_KEYS_CX   := src/keys/zkn_ed25519_ecdh.c
+SRCS_AES_CX    := src/aes/zkn_aes_gcm.c src/aes/zkn_aes_ctr.c
+
 ifeq ($(WITH_KEYS),1)
-  SRCS += $(SRCS_KEYS) $(SRCS_AES)
-  $(warning keys/ and aes/ modules need the Ledger SDK; SW build will fail.)
+  # host build uses the software backend; the cx_* sources are compiled only
+  # under ZKN_BN_BACKEND_LEDGER (they are #if-gated on it).
+  SRCS += $(SRCS_SW_CRYPTO) $(SRCS_KEYS_SW) $(SRCS_AES_SW)
+  CFLAGS += -DZKN_WITH_KEYS -I src/sw_crypto
 endif
 
 OBJS := $(SRCS:%.c=$(OBJ)/%.o)

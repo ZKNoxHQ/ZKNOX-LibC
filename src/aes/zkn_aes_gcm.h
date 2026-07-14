@@ -19,4 +19,22 @@ int zkn_aes256_gcm_encrypt(const uint8_t *key32,
                            uint8_t *ciphertext,
                            uint8_t *tag16);
 
+
+// AES-256-GCM with AAD (12-byte nonce), used for DKG share transport.
+// Matches curves-lite vss-dkg.ts encryptSharesAESGCMWithAAD / decryptShareAESGCMWithAAD.
+int zkn_aes256_gcm_encrypt_aad(const uint8_t *key32,
+                               const uint8_t *nonce, size_t nonce_len,
+                               const uint8_t *aad, size_t aad_len,
+                               const uint8_t *plaintext, size_t plaintext_len,
+                               uint8_t *ciphertext,
+                               uint8_t *tag16);
+
+// Returns 0 if the tag verifies, -1 on authentication failure (plaintext zeroed).
+int zkn_aes256_gcm_decrypt_aad(const uint8_t *key32,
+                               const uint8_t *nonce, size_t nonce_len,
+                               const uint8_t *aad, size_t aad_len,
+                               const uint8_t *ciphertext, size_t ciphertext_len,
+                               const uint8_t *tag16,
+                               uint8_t *plaintext);
+
 #endif // ZKN_AES_GCM_H

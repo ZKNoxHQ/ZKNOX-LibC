@@ -6,6 +6,8 @@
 #include <stddef.h>
 #include <string.h>
 
+#if defined(ZKN_BN_BACKEND_LEDGER) /* Ledger backend only */
+
 #include "os.h"
 #include "cx.h"
 #include "zkn_aes_gcm.h"
@@ -43,3 +45,5 @@ out:
     explicit_bzero(&ctx, sizeof(ctx));
     return rc;
 }
+
+#endif /* ZKN_BN_BACKEND_LEDGER */

@@ -12,6 +12,8 @@
 #include <stddef.h>
 #include <string.h>
 
+#if defined(ZKN_BN_BACKEND_LEDGER) /* Ledger backend only */
+
 #include "os.h"
 #include "cx.h"
 #include "zkn_aes_ctr.h"
@@ -48,3 +50,5 @@ out:
     explicit_bzero(iv_copy, sizeof(iv_copy));
     return rc;
 }
+
+#endif /* ZKN_BN_BACKEND_LEDGER */

@@ -6,6 +6,8 @@
 #include <stddef.h>
 #include <string.h>
 
+#if defined(ZKN_BN_BACKEND_LEDGER) /* Ledger backend only */
+
 #include "os.h"
 #include "cx.h"
 #include "zkn_ed25519_ecdh.h"
@@ -77,3 +79,4 @@ int zkn_ed25519_ecdh_kdf(const uint8_t *scalar_be32,
     return 0;
 }
 
+#endif /* ZKN_BN_BACKEND_LEDGER */
