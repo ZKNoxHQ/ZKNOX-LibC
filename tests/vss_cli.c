@@ -225,6 +225,4 @@ int main(int argc, char **argv)
   return 2;
 }
 
-#else
-int main(void) { return 0; }
 #endif

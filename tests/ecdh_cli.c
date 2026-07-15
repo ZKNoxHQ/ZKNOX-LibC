@@ -1,3 +1,8 @@
+/* Host-only test/CLI — compiled solely with -DZKN_HOST_TESTS. The Ledger SDK
+ * app build sweeps every .c under the submodule; without this guard the main()
+ * below would collide at link time with the other tests' main(). The guard
+ * makes the file an empty translation unit in any non-host build. */
+#ifdef ZKN_HOST_TESTS
 /* ecdh_cli.c — exercise the unified comms-crypto API (backend-agnostic):
  *   kdf     <scalar_be32> <VK_compressed>        -> aes key (32B)
  *   smul    <scalar_be32> <point_compressed>     -> compressed point
@@ -27,3 +32,5 @@ int main(int argc,char**argv){
     ph(ct,n); ph(tag,16); printf("\n"); return 0; }
   return 2;
 }
+
+#endif /* ZKN_HOST_TESTS */

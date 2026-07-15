@@ -158,6 +158,4 @@ int main(void)
   return g_fail ? 1 : 0;
 }
 
-#else
-int main(void) { return 0; }
 #endif

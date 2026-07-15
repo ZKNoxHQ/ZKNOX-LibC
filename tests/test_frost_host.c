@@ -249,6 +249,4 @@ int main(void){
   return rc;
 }
 
-#else
-int main(void){ return 0; }
 #endif
