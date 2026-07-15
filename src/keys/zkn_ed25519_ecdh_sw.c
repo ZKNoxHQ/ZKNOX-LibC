@@ -12,7 +12,7 @@
 #include <stddef.h>
 #include <string.h>
 
-#if defined(ZKN_BN_BACKEND_SW)
+#if defined(ZKN_HOST_BUILD)
 
 #include "zkn_ed25519_ecdh.h"
 
@@ -49,4 +49,4 @@ int zkn_ed25519_ecdh_kdf(const uint8_t *scalar_be32,
     return rc;
 }
 
-#endif /* ZKN_BN_BACKEND_SW */
+#endif /* ZKN_HOST_BUILD */

@@ -6,7 +6,7 @@
 #include <stddef.h>
 #include <string.h>
 
-#if defined(ZKN_BN_BACKEND_LEDGER) /* Ledger backend only */
+#ifndef ZKN_HOST_BUILD /* device build: BOLOS cx_* syscalls */
 
 #include "os.h"
 #include "cx.h"
@@ -46,4 +46,4 @@ out:
     return rc;
 }
 
-#endif /* ZKN_BN_BACKEND_LEDGER */
+#endif /* !ZKN_HOST_BUILD */

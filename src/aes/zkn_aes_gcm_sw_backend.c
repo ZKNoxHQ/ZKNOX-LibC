@@ -5,7 +5,7 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#if defined(ZKN_BN_BACKEND_SW)
+#if defined(ZKN_HOST_BUILD)
 
 #include "zkn_aes_gcm.h"
 
@@ -54,4 +54,4 @@ int zkn_aes256_gcm_decrypt_aad(const uint8_t *key32, const uint8_t *nonce, size_
                                          ciphertext, ciphertext_len, tag16, plaintext);
 }
 
-#endif /* ZKN_BN_BACKEND_SW */
+#endif /* ZKN_HOST_BUILD */

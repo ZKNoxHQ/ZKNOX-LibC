@@ -37,6 +37,9 @@ ARFLAGS  = rcs
 # ── Flags ─────────────────────────────────────────────────────────────
 CFLAGS  := -Wall -Wextra -Wno-unused-parameter
 CFLAGS  += -DZKN_BN_BACKEND_SW
+# Host-only build marker: the firmware sweeps these .c files itself and never
+# uses this Makefile, so this define cleanly separates host from device.
+CFLAGS  += -DZKN_HOST_BUILD
 CFLAGS  += -I src/common -I src/bn -I src/compat
 CFLAGS  += -I src/zkn_mont -I src/bls12381 -I src/ecc -I src/hash
 CFLAGS  += -I src/mpt -I src/keys -I src/threshold -I src/aes

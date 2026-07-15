@@ -1,3 +1,7 @@
+/* Software crypto — HOST ONLY. Uses calloc/free, unavailable on BOLOS (no heap).
+ * The Ledger app build sweeps every .c under the submodule, so this guard makes
+ * the file an empty translation unit on device. */
+#ifdef ZKN_HOST_BUILD
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
@@ -31,3 +35,5 @@ void zkn_sw_sha256(const uint8_t*msg,size_t len,uint8_t out[32]){
   for(int i=0;i<8;i++){ out[4*i]=h[i]>>24;out[4*i+1]=h[i]>>16;out[4*i+2]=h[i]>>8;out[4*i+3]=h[i]; }
 }
 #include <stdlib.h>
+
+#endif /* ZKN_HOST_BUILD */

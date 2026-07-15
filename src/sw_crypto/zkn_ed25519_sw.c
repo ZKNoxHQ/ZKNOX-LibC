@@ -1,3 +1,7 @@
+/* Software crypto — HOST ONLY. Uses calloc/free, unavailable on BOLOS (no heap).
+ * The Ledger app build sweeps every .c under the submodule, so this guard makes
+ * the file an empty translation unit on device. */
+#ifdef ZKN_HOST_BUILD
 /* ed25519_sw.c — software edwards25519 scalar mult + RFC8032 (de)compression,
  * for the RAILGUN-engine ECDH-KDF: AES_KEY = SHA-256(compressed [scalar]·P).
  * Field/point ops ported from TweetNaCl (public domain, D. J. Bernstein et al). */
@@ -59,3 +63,4 @@ int zkn_sw_ed25519_ecdh_kdf(const u8 scalar_le[32], const u8 VK[32], u8 out[32])
 /* also expose raw compressed shared point (before SHA-256) for debugging */
 int zkn_sw_ed25519_scalarmul(const u8 scalar_le[32], const u8 VK[32], u8 out[32]){ gf P[4],Q[4]; if(unpack(Q,VK)) return -1; scalarmult(P,Q,scalar_le); pack(out,P); return 0; }
 
+#endif /* ZKN_HOST_BUILD */

@@ -1,3 +1,7 @@
+/* Software crypto — HOST ONLY. Uses calloc/free, unavailable on BOLOS (no heap).
+ * The Ledger app build sweeps every .c under the submodule, so this guard makes
+ * the file an empty translation unit on device. */
+#ifdef ZKN_HOST_BUILD
 /* aes_gcm_sw.c — software AES-256-GCM (no AAD, 16-byte IV), matching Node's
  * createCipheriv('aes-256-gcm', key32, iv16) and BOLOS cx_aes_gcm_* / the
  * RAILGUN engine note-encryption. Self-contained; host-testable. */
@@ -135,3 +139,5 @@ int zkn_sw_aes256_gcm_decrypt_aad(const uint8_t key[32], const uint8_t *iv, size
   if(diff){ memset(pt,0,ctlen); return -1; }
   return 0;
 }
+
+#endif /* ZKN_HOST_BUILD */
