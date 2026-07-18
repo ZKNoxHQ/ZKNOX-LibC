@@ -36,6 +36,26 @@ static int zkn_frost_ids_from_list(uint8_t *commitment_list, size_t len, zkn_bn_
   ZKN_ERROR_CLOSE();
 }
 
+/* Position of `identifier` in the commitment list. The binding factors are
+ * indexed by POSITION, not by identifier: assuming idx == identifier-1 only
+ * holds when the signers happen to be 1..len, and reads out of bounds
+ * otherwise (quorum {2,3} of a 2-of-3 asks for index 2 of a 2-entry list). */
+static int zkn_frost_index_of_id(uint8_t *commitment_list, size_t len,
+                                 size_t identifier, size_t *idx_out)
+{
+  for (size_t i = 0; i < len; i++)
+  {
+    const uint8_t *idb = commitment_list + i * 5 * 32;
+    int match = 1;
+    for (int b = 0; b < 24; b++) if (idb[b]) { match = 0; break; }
+    if (!match) continue;
+    size_t v = 0;
+    for (int b = 24; b < 32; b++) v = (v << 8) | idb[b];
+    if (v == identifier) { *idx_out = i; return ZKN_OK; }
+  }
+  return ZKN_ERR_INVALID_PARAM; /* not a signer of this quorum */
+}
+
 // Lagrangian interpolation in 0= prod(x_i)/prod(xj-xi)
 int zkn_frost_interpolate(zkn_bn_t *L, size_t len, zkn_bn_t x_i, zkn_bn_t modulus, zkn_bn_t result)
 {
@@ -497,8 +517,12 @@ int zkn_partial_sig(
   zkn_edpoint_t group_commitment;
   zkn_bn_t H;
 
-  uint8_t binding_factors[32 * 3];
+  uint8_t binding_factors[32 * ZKN_FROST_MAX_SIGNERS];
   uint8_t groupkey_compressed[32];
+  size_t bf_idx;
+
+  /* zkn_compute_binding_factors writes len*32 bytes here. */
+  if (len == 0 || len > ZKN_FROST_MAX_SIGNERS) return ZKN_ERR_INVALID_PARAM;
 
   // msg_le is the little-endian (circomlib) encoding of the message field element,
   // used directly for both binding factors and the challenge.
@@ -538,7 +562,8 @@ int zkn_partial_sig(
   ZKN_CHECK(zkn_bn_alloc_init(&bn_bindingNonce, 32, binding_nonce, 32));
   ZKN_CHECK(zkn_bn_alloc_init(&bnlambda_i, 32, lambda_i, 32));
   ZKN_CHECK(zkn_bn_alloc_init(&bn_sk, 32, secret_key_be, 32));
-  ZKN_CHECK(zkn_bn_alloc_init(&bn_bindingfactor1, 32, binding_factors + (identifier - 1) * 32, 32));
+  ZKN_CHECK(zkn_frost_index_of_id(commitment_list, len, identifier, &bf_idx));
+  ZKN_CHECK(zkn_bn_alloc_init(&bn_bindingfactor1, 32, binding_factors + bf_idx * 32, 32));
 
   ZKN_CHECK(zkn_bn_alloc(&temp, 32));
 
@@ -639,17 +664,9 @@ int zkn_frost_verify_share(zkn_edcurve_t *curve, size_t identifier, uint8_t *sk_
 
   /* binding factors, and index of `identifier` in the list */
   ZKN_CHECK(zkn_compute_binding_factors(curve, gk, commitment_list, len, msg_le, msglen, bfs));
-  for (size_t i = 0; i < len; i++)
-  {
-    zkn_bn_t id_i;
-    ZKN_CHECK(zkn_bn_alloc_init(&id_i, 32, commitment_list + i * 5 * 32, 32));
-    uint8_t idb[32];
-    ZKN_CHECK(zkn_bn_export(id_i, idb, 32));
-    ZKN_CHECK(zkn_bn_destroy(&id_i));
-    int match = 1;
-    for (int b = 0; b < 28; b++) if (idb[b]) { match = 0; break; }
-    if (match && ((size_t)((idb[28] << 24) | (idb[29] << 16) | (idb[30] << 8) | idb[31]) == identifier)) { idx = i; break; }
-  }
+  /* Absent identifier used to fall through with idx = 0, verifying against
+   * someone else's binding factor. */
+  ZKN_CHECK(zkn_frost_index_of_id(commitment_list, len, identifier, &idx));
 
   /* commitmentShare = hiding_i + bf_i · binding_i */
   ZKN_CHECK(tEdwards_alloc(curve, &H));
