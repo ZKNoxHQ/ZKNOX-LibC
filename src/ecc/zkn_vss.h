@@ -24,10 +24,24 @@
  * Participant input for VSS dealer operations
  * Translates: types.ts::ParticipantInput
  */
+// Fresh-per-ceremony nonce length, and max group label length.
+#define VSS_EPOCH_LEN    16
+#define VSS_MAX_NAME_LEN 32
+// Bump when the derivation encoding changes: old and new must never collide.
+#define VSS_CTX_VERSION  1
+
 typedef struct participant {
-    size_t id;              // 1..N (must be positive)
-    uint8_t seed[32];       // 32 bytes (private to dealer)
-    uint8_t password[32];   // 32 bytes (private to dealer)
+    size_t id;                          // 1..N — distinguishes devices restored
+                                        // from the SAME seed (without it they would
+                                        // derive identical polynomials)
+    uint8_t seed[32];                   // private to dealer
+    uint8_t epoch[VSS_EPOCH_LEN];       // fresh per ceremony, local to this dealer,
+                                        // public (goes in recovery data). This is
+                                        // what stops coefficient reuse across
+                                        // ceremonies of the same group.
+    size_t n;                           // group size — separates 2-of-3 from 2-of-5
+    uint8_t name[VSS_MAX_NAME_LEN];     // group label, raw bytes
+    size_t name_len;                    // <= VSS_MAX_NAME_LEN
 } participant_t;
 
 /**
@@ -46,12 +60,18 @@ typedef struct vss_share {
  * Translates: vss-dkg.ts::makeDealerCoeffsDeterministic
  * 
  * For threshold t, produces coefficients [a0, a1, ..., a_{t-1}] where:
- *   - Each a_j = H6(id || j || seed || password) mod subOrder
- *   - id and j are encoded as 32-byte little-endian integers
+ *   - a_j = H6(ctx) mod subOrder, with the domain-separated encoding
+ *
+ *       VERSION(32) | id(32) | j(32) | n(32) | t(32) | seed(32) | epoch(16)
+ *                                             | name_len(1) | name(<=32)
+ *
+ *     Numeric fields are 32-byte little-endian integers. Every field is
+ *     fixed-width except `name`, which is length-prefixed AND last, so two
+ *     distinct contexts cannot produce the same byte string.
  *   - a0 MUST be non-zero
  * 
  * @param curve       Initialized BabyJubjub curve context
- * @param p           Participant input (id, seed, password)
+ * @param p           Participant input (id, seed, epoch, n, name)
  * @param threshold   Number of coefficients (t in t-of-n scheme)
  * @param initial_len Number of pre-computed coefficients (0 to start fresh)
  * @param coefflist   Output: threshold * 32 bytes

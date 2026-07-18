@@ -35,92 +35,79 @@
  * 
  * @return ZKN_OK on success, error code otherwise
  */
+/* Write `v` as a 32-byte little-endian integer. Mirrors vss-dkg.ts::toBytes,
+ * which is what the JS side feeds to H6 — the two encodings must agree byte
+ * for byte or the derived coefficients silently diverge. */
+static void vss_le32(uint8_t *out, uint64_t v)
+{
+    explicit_bzero(out, 32);
+    for (size_t k = 0; k < 8; k++) out[k] = (uint8_t)((v >> (8 * k)) & 0xFF);
+}
+
 int makeDealerCoeffsDeterministic(
-    zkn_edcurve_t *curve, 
-    participant_t *p, 
-    size_t threshold, 
+    zkn_edcurve_t *curve,
+    participant_t *p,
+    size_t threshold,
     size_t initial_len,
     uint8_t *coefflist
 ) {
     ZKN_ERROR_INIT();
 
-    // Validate parameters
-    if (threshold == 0) {
-        return ZKN_ERR_INVALID_PARAM;
-    }
-    if (threshold > VSS_MAX_THRESHOLD) {
-        return ZKN_WRONG_LENGTH;
-    }
-    if (initial_len > threshold) {
-        return ZKN_ERR_INVALID_PARAM;
-    }
-    if (p->id == 0) {
-        return ZKN_ERR_INVALID_PARAM;  // IDs must be 1..N
-    }
+    if (threshold == 0)                    return ZKN_ERR_INVALID_PARAM;
+    if (threshold > VSS_MAX_THRESHOLD)     return ZKN_WRONG_LENGTH;
+    if (initial_len > threshold)           return ZKN_ERR_INVALID_PARAM;
+    if (p->id == 0)                        return ZKN_ERR_INVALID_PARAM;  // IDs are 1..N
+    if (p->n == 0 || threshold > p->n)     return ZKN_ERR_INVALID_PARAM;
+    if (p->name_len > VSS_MAX_NAME_LEN)    return ZKN_ERR_INVALID_PARAM;
 
     zkn_bn_t coeff_bn;
     ZKN_CHECK(zkn_bn_alloc(&coeff_bn, 32));
 
-    // Input buffer: id(32) | j(32) | seed(32) | password(32) = 128 bytes
-    // All values in little-endian representation
-    uint8_t input[128];
+    /* VERSION(32) | id(32) | j(32) | n(32) | t(32) | seed(32) | epoch(16)
+     *                                       | name_len(1) | name(name_len)
+     * Fixed-width throughout except `name`, which is length-prefixed and last,
+     * so no two distinct contexts share a byte string. */
+    uint8_t input[32 * 6 + VSS_EPOCH_LEN + 1 + VSS_MAX_NAME_LEN];
     explicit_bzero(input, sizeof(input));
 
-    // Encode participant ID as 32-byte LE integer (id is small, so just first bytes)
-    // p->id fits in size_t, write as LE
-    input[0] = (uint8_t)(p->id & 0xFF);
-    input[1] = (uint8_t)((p->id >> 8) & 0xFF);
-    // Remaining bytes of id field are already zero
+    const size_t OFF_J    = 64;                       /* the only field that varies */
+    const size_t OFF_TAIL = 32 * 6;
+    const size_t inlen    = OFF_TAIL + VSS_EPOCH_LEN + 1 + p->name_len;
 
-    // Copy seed and password (they stay constant for all coefficients)
-    memcpy(input + 64, p->seed, 32);
-    memcpy(input + 96, p->password, 32);
+    vss_le32(input + 0,   (uint64_t)VSS_CTX_VERSION);
+    vss_le32(input + 32,  (uint64_t)p->id);
+    /* input + 64 = j, set per iteration */
+    vss_le32(input + 96,  (uint64_t)p->n);
+    vss_le32(input + 128, (uint64_t)threshold);
+    memcpy(input + 160, p->seed, 32);
+    memcpy(input + OFF_TAIL, p->epoch, VSS_EPOCH_LEN);
+    input[OFF_TAIL + VSS_EPOCH_LEN] = (uint8_t)p->name_len;
+    if (p->name_len) memcpy(input + OFF_TAIL + VSS_EPOCH_LEN + 1, p->name, p->name_len);
 
-    // Determine starting index for coefficient generation
     size_t start_j = initial_len;
 
-    // If no initial state, we need to derive a0 first
     if (initial_len == 0) {
-        // Encode j=0 as 32-byte LE integer (bytes 32-63)
-        explicit_bzero(input + 32, 32);  // j = 0
+        vss_le32(input + OFF_J, 0);
+        ZKN_CHECK(Babyfrost_H6(input, inlen, curve->order, coeff_bn));
 
-        // Compute H6(id || 0 || seed || password) mod order
-        ZKN_CHECK(Babyfrost_H6(input, sizeof(input), curve->order, coeff_bn));
-
-        // Check that a0 is non-zero (extremely unlikely to fail, but required)
-        // zkn_bn_cmp_u32 sets diff to: 0 if equal, >0 if bn>n, <0 if bn<n
-        int cmp_result = 1;  // Initialize to non-zero
+        int cmp_result = 1;
         ZKN_CHECK(zkn_bn_cmp_u32(coeff_bn, 0, &cmp_result));
         if (cmp_result == 0) {
             (void)zkn_bn_destroy(&coeff_bn);
+            explicit_bzero(input, sizeof(input));
             return ZKN_ERR_INVALID_PARAM;  // a0 must be non-zero
         }
-
-        // Export a0 to coefflist[0..31]
         ZKN_CHECK(zkn_bn_export(coeff_bn, coefflist, 32));
-
         start_j = 1;
     }
 
-    // Generate remaining coefficients a_{start_j} through a_{threshold-1}
     for (size_t j = start_j; j < threshold; j++) {
-        // Encode j as 32-byte LE integer (bytes 32-63)
-        explicit_bzero(input + 32, 32);
-        input[32] = (uint8_t)(j & 0xFF);
-        input[33] = (uint8_t)((j >> 8) & 0xFF);
-        // Remaining bytes are already zero
-
-        // Compute H6(id || j || seed || password) mod order
-        ZKN_CHECK(Babyfrost_H6(input, sizeof(input), curve->order, coeff_bn));
-
-        // Export coefficient to coefflist[j*32..(j+1)*32-1]
+        vss_le32(input + OFF_J, (uint64_t)j);
+        ZKN_CHECK(Babyfrost_H6(input, inlen, curve->order, coeff_bn));
         ZKN_CHECK(zkn_bn_export(coeff_bn, coefflist + (j * 32), 32));
     }
 
-    // Cleanup
     ZKN_CHECK(zkn_bn_destroy(&coeff_bn));
-
-    // Clear sensitive input buffer
     explicit_bzero(input, sizeof(input));
 
     ZKN_ERROR_CLOSE();

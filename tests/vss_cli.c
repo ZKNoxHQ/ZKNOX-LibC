@@ -1,6 +1,6 @@
 /* vss_cli.c — expose the C VSS/DKG API (zkn_vss.h) over argv.
  *
- *   coeffs         <id> <threshold> <seed:32B> <password:32B>
+ *   coeffs         <id> <threshold> <n> <seed:32B> <epoch:16B> <name:hex<=32B>
  *                  -> "<a0:32B><a1:32B>..."            makeDealerCoeffsDeterministic
  *   commit         <threshold> <coeffs:threshold*32B>
  *                  -> "<C0:64B><C1:64B>..."            makeDealerCommitments
@@ -37,13 +37,28 @@ static int unhex(const char *s, uint8_t *out, size_t n)
 }
 static void phex(const uint8_t *b, size_t n) { for (size_t i = 0; i < n; i++) printf("%02x", b[i]); }
 
+/* Fill a participant_t from <id> <t> <n> <seed:32B> <epoch:16B> <name:hex>.
+ * Shared by `coeffs` and `dealer` so the two can't drift apart. */
+static int parse_participant(char **argv, participant_t *p, size_t *t_out)
+{
+  memset(p, 0, sizeof(*p));
+  p->id = (size_t)strtoul(argv[0], NULL, 10);
+  *t_out = (size_t)strtoul(argv[1], NULL, 10);
+  p->n = (size_t)strtoul(argv[2], NULL, 10);
+  if (unhex(argv[3], p->seed, 32)) return 2;
+  if (unhex(argv[4], p->epoch, VSS_EPOCH_LEN)) return 2;
+  size_t nl = strlen(argv[5]) / 2;
+  if (nl > VSS_MAX_NAME_LEN) return 2;
+  if (nl && unhex(argv[5], p->name, nl)) return 2;
+  p->name_len = nl;
+  return 0;
+}
+
 static int cmd_coeffs(int argc, char **argv)
 {
-  if (argc != 4) return 2;
-  participant_t p;
-  p.id = (size_t)strtoul(argv[0], NULL, 10);
-  size_t t = (size_t)strtoul(argv[1], NULL, 10);
-  if (unhex(argv[2], p.seed, 32) || unhex(argv[3], p.password, 32)) return 2;
+  if (argc != 6) return 2;
+  participant_t p; size_t t;
+  if (parse_participant(argv, &p, &t)) return 2;
   zkn_edcurve_t curve;
   tEdwards_Curve_alloc_init(&curve, _BABYJUJUB_ID);
   uint8_t coeffs[VSS_MAX_PARTICIPANTS * 32];
@@ -94,19 +109,17 @@ static int cmd_verify_feldman(int argc, char **argv)
   return 0;
 }
 
-/* dealer <id> <seed:32B> <password:32B> <threshold> <ids_csv>
+/* dealer <id> <threshold> <n> <seed:32B> <epoch:16B> <name:hex<=32B> <ids_csv>
  * Models a dealer's device round 1: derives coeffs INTERNALLY (never printed),
  * outputs public commitments + one private share per recipient.
  *   -> "<commitments:threshold*64B> <share_id1:32B> <share_id2:32B> ..."      */
 static int cmd_dealer(int argc, char **argv)
 {
-  if (argc != 5) return 2;
-  participant_t p;
-  p.id = (size_t)strtoul(argv[0], NULL, 10);
-  if (unhex(argv[1], p.seed, 32) || unhex(argv[2], p.password, 32)) return 2;
-  size_t t = (size_t)strtoul(argv[3], NULL, 10);
+  if (argc != 7) return 2;
+  participant_t p; size_t t;
+  if (parse_participant(argv, &p, &t)) return 2;
   size_t rids[VSS_MAX_PARTICIPANTS], nr = 0;
-  for (char *tok = strtok(argv[4], ","); tok && nr < VSS_MAX_PARTICIPANTS; tok = strtok(NULL, ","))
+  for (char *tok = strtok(argv[6], ","); tok && nr < VSS_MAX_PARTICIPANTS; tok = strtok(NULL, ","))
     rids[nr++] = (size_t)strtoul(tok, NULL, 10);
   zkn_edcurve_t curve;
   tEdwards_Curve_alloc_init(&curve, _BABYJUJUB_ID);
