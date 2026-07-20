@@ -22,12 +22,14 @@
  * Translates: vss-dkg.ts::makeDealerCoeffsDeterministic
  * 
  * For threshold t, produces coefficients [a0, a1, ..., a_{t-1}] where:
- *   - Each coefficient is derived as H6(id || j || seed || password) mod order
+ *   - Each coefficient is derived as H6(VERSION | id | j | n | t | seed | epoch |
+ *     name_len | name) mod order — a domain-separated context, so distinct
+ *     ceremonies (fresh epoch) and groups (name) get independent polynomials
  *   - id and j are encoded as 32-byte little-endian integers
  *   - a0 MUST be non-zero (error if hash happens to produce 0)
  * 
  * @param curve       Initialized BabyJubjub curve context (provides subgroup order)
- * @param p           Participant input (id, seed, password)
+ * @param p           Participant input (id, seed, epoch, n, name)
  * @param threshold   Number of coefficients to generate (t in t-of-n scheme)
  * @param initial_len Number of pre-computed coefficients already in coefflist (0 to start fresh)
  * @param coefflist   Output buffer for coefficients, size must be >= threshold * 32 bytes

@@ -7,6 +7,15 @@
 #  We run it but don't let it fail the suite; the 9 valid checks must pass.
 # ══════════════════════════════════════════════════════════════════════
 
+# The FROST/VSS host tests (test_frost_*, vss_cli, frost_cli, test_vss) exercise
+# ZKNOX_DEBUG-only code: their main() and the functions they link are gated
+# #ifdef ZKNOX_DEBUG. This file is included AFTER the root Makefile's
+# `ifeq ($(ZKNOX_DEBUG),1)` block, so setting the variable here is too late to
+# feed that block — add the compiler flag straight to CFLAGS instead, which is
+# expanded at the recipe below. libzknox.a still needs ZKNOX_DEBUG=1 to carry
+# the gated symbols; the `test` target depends on it being built that way.
+CFLAGS += -DZKNOX_DEBUG
+
 TEST_SRCS := $(wildcard tests/test_*.c)
 TEST_BINS := $(TEST_SRCS:tests/%.c=$(BIN)/%)
 
