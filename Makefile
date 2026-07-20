@@ -28,6 +28,7 @@ WITH_PLONK ?= 1
 WITH_KEYS  ?= 0
 WITH_MPT   ?= 1
 DEBUG      ?= 0
+ZKNOX_DEBUG ?= 0    # 1 → compile ZKNOX_DEBUG-only code (VSS Feldman helpers, DKG)
 
 # ── Toolchain ─────────────────────────────────────────────────────────
 CC      ?= cc
@@ -47,6 +48,14 @@ ifeq ($(DEBUG),1)
   CFLAGS += -O0 -g
 else
   CFLAGS += -O2
+endif
+
+# makeDealerCommitments / verifyFeldmanShare (and the rest of the DKG-facing
+# VSS helpers) are gated #ifdef ZKNOX_DEBUG: the DKG is a debug-only feature,
+# production needs constant-time versions first. The sim passes ZKNOX_DEBUG=1
+# here when built with MODE=debug, so the archive actually contains them.
+ifeq ($(ZKNOX_DEBUG),1)
+  CFLAGS += -DZKNOX_DEBUG
 endif
 
 # Position-independent code for the .so build
