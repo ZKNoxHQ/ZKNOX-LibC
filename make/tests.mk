@@ -7,20 +7,28 @@
 #  We run it but don't let it fail the suite; the 9 valid checks must pass.
 # ══════════════════════════════════════════════════════════════════════
 
-# The FROST/VSS host tests (test_frost_*, vss_cli, frost_cli, test_vss) exercise
-# ZKNOX_DEBUG-only code: their main() and the functions they link are gated
-# #ifdef ZKNOX_DEBUG. This file is included AFTER the root Makefile's
-# `ifeq ($(ZKNOX_DEBUG),1)` block, so setting the variable here is too late to
-# feed that block — add the compiler flag straight to CFLAGS instead, which is
-# expanded at the recipe below. libzknox.a still needs ZKNOX_DEBUG=1 to carry
-# the gated symbols; the `test` target depends on it being built that way.
-CFLAGS += -DZKNOX_DEBUG
+# The FROST/VSS host tests exercise gated code: their main() and the functions
+# they link sit behind ZKNOX_DEBUG / ZKN_FROST.
+#
+# This used to be a bare `CFLAGS += -DZKNOX_DEBUG` at file scope. Make reads the
+# whole makefile before running any recipe, so that landed in EVERY compilation
+# — the libzknox.a objects included — and the ZKNOX_DEBUG switch had no effect
+# on the archive at all. `make ZKNOX_DEBUG=0` still produced a debug library.
+# A target-specific variable keeps it to the test binaries, and the `test`
+# target below re-invokes make so the archive is built to match.
+$(TEST_BINS): CFLAGS += -DZKNOX_DEBUG -DZKN_FROST
 
 TEST_SRCS := $(wildcard tests/test_*.c)
 TEST_BINS := $(TEST_SRCS:tests/%.c=$(BIN)/%)
 
+# The archive has to carry the gated symbols the tests link against, so build
+# it with both switches on rather than whatever the caller happened to pass.
 .PHONY: test
-test: $(TEST_BINS)
+test:
+	@$(MAKE) --no-print-directory ZKNOX_DEBUG=1 ZKN_FROST=1 run-tests
+
+.PHONY: run-tests
+run-tests: $(TEST_BINS)
 	@total=0; failed_suites=0;                                    \
 	for b in $(TEST_BINS); do                                     \
 	    total=$$((total+1));                                      \

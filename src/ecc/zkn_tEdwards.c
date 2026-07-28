@@ -456,11 +456,24 @@ int tEdwards_Coronize(zkn_edcurve_t *curve, zkn_edpoint_t *G)
   ZKN_ERROR_CLOSE();
 }
 
-/* Variable-time double-and-add. Gated behind ZKNOX_DEBUG so the
- * symbol is neither declared (zkn_tEdwards.h) nor defined in
- * production builds — any accidental reference fails at both compile
- * and link time. Production signing uses tEdwards_fixedBase_4MSM. */
-#ifdef ZKNOX_DEBUG
+/* Variable-time double-and-add.
+ *
+ * INVARIANT: the scalar passed here must be PUBLIC. Never a share, never a
+ * nonce, never anything derived from one. Timing reveals the scalar.
+ *
+ * The gate used to be ZKNOX_DEBUG alone, which enforced that by construction:
+ * the symbol was neither declared nor defined in production, so an accidental
+ * reference failed at compile and link time. ZKN_FROST relaxes it, because the
+ * threshold layer needs variable-BASE multiplication — binding factor times a
+ * wire commitment, participant id times an accumulator — and the fixed-base
+ * table does not apply to those. Their scalars are public, so variable time
+ * leaks nothing.
+ *
+ * What made that safe is a one-time audit, not the compiler: every secret
+ * scalar on a fixed base was moved to tEdwards_fixedBase_4MSM (zkn_frost_commit,
+ * zkn_frost_verify_share, makeDealerCommitments, verifyFeldmanShare). Adding a
+ * caller here means re-checking that its scalar is public. */
+#if defined(ZKNOX_DEBUG) || defined(ZKN_FROST)
 
 // naive double and add — NOT constant time
 int tEdwards_scalarMul_bn(zkn_edcurve_t *curve, zkn_edpoint_t *G, zkn_bn_t *k, zkn_edpoint_t *R)
@@ -529,7 +542,7 @@ int tEdwards_scalarMul(zkn_edcurve_t *curve, zkn_edpoint_t *G, const uint8_t *k,
   ZKN_ERROR_CLOSE();
 }
 
-#endif /* ZKNOX_DEBUG — closes the variable-time scalarMul* gate above */
+#endif /* ZKNOX_DEBUG || ZKN_FROST — closes the variable-time scalarMul* gate */
 
 /* ================================================================== */
 /*  2MSM — table-based, on-the-fly loading                            */

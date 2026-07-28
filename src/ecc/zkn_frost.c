@@ -1,7 +1,7 @@
 /* FROST primitives call tEdwards_scalarMul_bn (variable-time) which
  * is gated behind ZKNOX_DEBUG — gate the whole translation unit to
  * match. */
-#ifdef ZKNOX_DEBUG
+#if defined(ZKNOX_DEBUG) || defined(ZKN_FROST)
 
 #include <stdint.h>  // uint*_t
 #include <stdbool.h> // bool
@@ -800,4 +800,4 @@ int zkn_frost_verify(zkn_edcurve_t *curve, uint8_t *R8_be, uint8_t *S,
   ZKN_ERROR_CLOSE();
 }
 
-#endif /* ZKNOX_DEBUG — closes the file-level gate at the top */
+#endif /* ZKNOX_DEBUG || ZKN_FROST — closes the file-level gate at the top */

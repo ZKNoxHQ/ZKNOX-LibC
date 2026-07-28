@@ -29,6 +29,7 @@ WITH_KEYS  ?= 0
 WITH_MPT   ?= 1
 DEBUG      ?= 0
 ZKNOX_DEBUG ?= 0    # 1 → compile ZKNOX_DEBUG-only code (VSS Feldman helpers, DKG)
+ZKN_FROST   ?= 0    # 1 → compile the threshold layer (frost, vss helpers, vartime scalarMul)
 
 # ── Toolchain ─────────────────────────────────────────────────────────
 CC      ?= cc
@@ -54,6 +55,9 @@ endif
 # VSS helpers) are gated #ifdef ZKNOX_DEBUG: the DKG is a debug-only feature,
 # production needs constant-time versions first. The sim passes ZKNOX_DEBUG=1
 # here when built with MODE=debug, so the archive actually contains them.
+ifeq ($(ZKN_FROST),1)
+  CFLAGS += -DZKN_FROST
+endif
 ifeq ($(ZKNOX_DEBUG),1)
   CFLAGS += -DZKNOX_DEBUG
 endif

@@ -148,7 +148,7 @@ int evalPolySubgroup(zkn_edcurve_t *curve, const uint8_t *coeffs, size_t degree,
 /* makeDealerCommitments - C_j = a_j * G for each coefficient.
  * Uses scalar multiplication, gated behind ZKNOX_DEBUG (production needs a
  * constant-time fixed-base table, like the EdDSA prv2pub path). */
-#ifdef ZKNOX_DEBUG
+#if defined(ZKNOX_DEBUG) || defined(ZKN_FROST)
 int makeDealerCommitments(zkn_edcurve_t *curve, const uint8_t *coeffs,
                           size_t threshold, uint8_t *commitments)
 {
@@ -166,7 +166,7 @@ int makeDealerCommitments(zkn_edcurve_t *curve, const uint8_t *coeffs,
     ZKN_CHECK(tEdwards_destroy(curve, &P));
     ZKN_ERROR_CLOSE();
 }
-#endif /* ZKNOX_DEBUG */
+#endif /* ZKNOX_DEBUG || ZKN_FROST */
 
 /* computeDealerShareForId - s(i) = p(i). */
 int computeDealerShareForId(zkn_edcurve_t *curve, const uint8_t *coeffs,
@@ -185,7 +185,7 @@ int computeDealerShareForId(zkn_edcurve_t *curve, const uint8_t *coeffs,
 
 /* verifyFeldmanShare - check s(i)*G == Σ_j i^j * C_j.
  * Uses scalar multiplication, gated behind ZKNOX_DEBUG (see above). */
-#ifdef ZKNOX_DEBUG
+#if defined(ZKNOX_DEBUG) || defined(ZKN_FROST)
 int verifyFeldmanShare(zkn_edcurve_t *curve, size_t id, const uint8_t *share,
                        const uint8_t *commitments, size_t threshold, bool *valid)
 {
@@ -226,7 +226,7 @@ int verifyFeldmanShare(zkn_edcurve_t *curve, size_t id, const uint8_t *share,
     ZKN_CHECK(tEdwards_destroy(curve, &Cj));
     ZKN_ERROR_CLOSE();
 }
-#endif /* ZKNOX_DEBUG */
+#endif /* ZKNOX_DEBUG || ZKN_FROST */
 
 /* deriveInterpolatingValue - Lagrange coefficient at 0 for x_i over {ids}. */
 int deriveInterpolatingValue(zkn_edcurve_t *curve, const size_t *ids, size_t num_ids,
