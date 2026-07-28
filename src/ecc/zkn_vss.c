@@ -157,7 +157,9 @@ int makeDealerCommitments(zkn_edcurve_t *curve, const uint8_t *coeffs,
     ZKN_CHECK(tEdwards_alloc(curve, &P));
     for (size_t j = 0; j < threshold; j++)
     {
-        ZKN_CHECK(tEdwards_scalarMul(curve, &curve->G, (uint8_t *)(coeffs + j * 32), 32, &P));
+        /* The coefficients are the dealer's secret polynomial — a0 is its
+         * contribution to the group key. Fixed base, constant time. */
+        ZKN_CHECK(tEdwards_fixedBase_4MSM(curve, (const uint8_t *)(coeffs + j * 32), &P));
         ZKN_CHECK(tEdwards_normalize(curve, &P));
         ZKN_CHECK(tEdwards_export(curve, &P, commitments + j * 64, commitments + j * 64 + 32));
     }
@@ -200,7 +202,9 @@ int verifyFeldmanShare(zkn_edcurve_t *curve, size_t id, const uint8_t *share,
     ZKN_CHECK(tEdwards_alloc(curve, &tmp));
     ZKN_CHECK(tEdwards_alloc(curve, &Cj));
     // lhs = s(i) * G
-    ZKN_CHECK(tEdwards_scalarMul(curve, &curve->G, (uint8_t *)share, 32, &lhs));
+    /* lhs = s(i) * G — s(i) is the secret share just received. Fixed base,
+     * constant time. */
+    ZKN_CHECK(tEdwards_fixedBase_4MSM(curve, (const uint8_t *)share, &lhs));
     ZKN_CHECK(tEdwards_normalize(curve, &lhs));
     // rhs = Σ i^j * C_j via Horner: rhs = C_{t-1}; for j=t-2..0: rhs = rhs*i + C_j
     ZKN_CHECK(tEdwards_init(curve, (uint8_t *)(commitments + (threshold - 1) * 64),

@@ -201,10 +201,17 @@ int zkn_frost_commit(zkn_edcurve_t *curve, uint8_t *secret, uint8_t *secret_nonc
   ZKN_CHECK(zkn_frost_nonce_generate(curve, secret, secret_nonces));
   ZKN_CHECK(zkn_frost_nonce_generate(curve, secret, secret_nonces + 32));
 
-  ZKN_CHECK(tEdwards_scalarMul(curve, &curve->G, secret_nonces, curve->fieldsize8, comms));
+  /* fixedBase_4MSM, not scalarMul: (d_i, e_i) are the one-time FROST nonces,
+   * and tEdwards_scalarMul is a variable-time double-and-add. Leaking a nonce
+   * through timing leaks the share — the whole point of the ZKNOX_DEBUG gate
+   * on scalarMul was to keep it out of anything that touches a secret. The
+   * two are proven to agree on the same 32-byte big-endian scalar
+   * (tests/test_frost_fixedbase.c), so this is a substitution, not a change
+   * of behaviour. */
+  ZKN_CHECK(tEdwards_fixedBase_4MSM(curve, secret_nonces, comms));
   ZKN_CHECK(tEdwards_normalize(curve, comms));
 
-  ZKN_CHECK(tEdwards_scalarMul(curve, &curve->G, secret_nonces + 32, curve->fieldsize8, comms + 1));
+  ZKN_CHECK(tEdwards_fixedBase_4MSM(curve, secret_nonces + 32, comms + 1));
   ZKN_CHECK(tEdwards_normalize(curve, comms + 1));
 
   ZKN_ERROR_CLOSE();
@@ -750,8 +757,10 @@ int zkn_frost_verify_share(zkn_edcurve_t *curve, size_t identifier, uint8_t *sk_
   ZKN_CHECK(zkn_bn_mod_mul(rs, t, chal, curve->order));
   ZKN_CHECK(zkn_bn_export(rs, rs_be, 32));
 
-  /* rightSide = commitmentShare + rightScalar · G */
-  ZKN_CHECK(tEdwards_scalarMul(curve, &curve->G, rs_be, 32, &RSG));
+  /* rightSide = commitmentShare + rightScalar · G.
+   * rs = lambda * sk_i * challenge, so the scalar is share-derived: fixed base,
+   * constant time. */
+  ZKN_CHECK(tEdwards_fixedBase_4MSM(curve, rs_be, &RSG));
   ZKN_CHECK(tEdwards_add(curve, &CS, &RSG, &RIGHT));
 
   ZKN_CHECK(zkn_frost_points_equal(curve, &LEFT, &RIGHT, valid));
