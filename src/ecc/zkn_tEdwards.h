@@ -94,11 +94,20 @@ int tEdwards_normalize(zkn_edcurve_t *curve, zkn_edpoint_t *i_R);
  * a data-dependent branch per bit. Production signing paths must use
  * tEdwards_fixedBase_4MSM (constant-time, table-based).
  *
- * Gated behind ZKNOX_DEBUG so any accidental reference from production
- * code fails to compile (declaration absent) and link (definition
- * absent). Surviving callers (FROST + INS_SCALAR_MUL_*) live in
- * ZKNOX_DEBUG-only translation units — see their containing .c files. */
-#ifdef ZKNOX_DEBUG
+ * INVARIANT: the scalar passed here must be PUBLIC. Never a share, never a
+ * nonce, never anything derived from one — timing reveals it.
+ *
+ * The gate was ZKNOX_DEBUG alone, which enforced that by construction: absent
+ * declaration, absent definition, so an accidental reference from production
+ * failed at compile and at link. ZKN_FROST relaxes it, because the threshold
+ * layer needs variable-BASE multiplication (binding factor times a wire
+ * commitment, participant id times an accumulator) and the fixed-base table
+ * does not apply there. Those scalars are public.
+ *
+ * What replaced the compiler as the guarantee is a one-time audit: every
+ * secret scalar on a fixed base moved to tEdwards_fixedBase_4MSM. Adding a
+ * caller here means re-checking that its scalar is public. */
+#if defined(ZKNOX_DEBUG) || defined(ZKN_FROST)
 int tEdwards_scalarMul_bn(zkn_edcurve_t *curve, zkn_edpoint_t *G, zkn_bn_t *k, zkn_edpoint_t *R);
 int tEdwards_scalarMul(zkn_edcurve_t *curve, zkn_edpoint_t *G, const uint8_t *k, size_t len, zkn_edpoint_t *R);
 #endif
