@@ -1,3 +1,8 @@
+/* Host-only. The firmware Makefile compiles every .c under src/, and the
+ * SDK has no exclusion variable — host-only files under src/zknox/ have to
+ * exclude themselves, or their main() collides at link time. */
+#ifdef ZKN_HOST_TESTS
+
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
@@ -66,3 +71,4 @@ int main(void)
   printf("\n== Results: %d/%d passed ==\n", g_pass, g_pass+g_fail);
   return g_fail ? 1 : 0;
 }
+#endif /* ZKN_HOST_TESTS */
