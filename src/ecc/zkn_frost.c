@@ -274,6 +274,44 @@ int zkn_encode_group_commitmentHash(zkn_edcurve_t *curve, uint8_t *commitment_li
   return 0;
 }
 
+// Load a wire-supplied point and refuse it if it is not on the curve.
+//
+// tEdwards_init does no validation at all: it converts x and y to Montgomery
+// form, sets z = 1, and hands back whatever it was given. Every point in a
+// commitment list comes from the coordinator, which is untrusted by design —
+// so without this check zkn_compute_group_commitment folds arbitrary bytes
+// into R, computes a challenge over the result, and the device signs against
+// it. The signature can never verify, but the one-time nonces (d_i, e_i) are
+// spent: a hostile coordinator burns the round again and again, and the
+// per-signer attribution the host-side RFC 9591 §5.3 check provides names the
+// victim, not the culprit.
+//
+// tEdwards_IsOnCurve already existed and had no callers anywhere in the
+// library. This is its first one.
+//
+// Only the curve equation is checked, not prime-order membership. Clearing the
+// cofactor would cost a full scalar multiplication by the order per point —
+// 2t of them per signature — and buys little here: the verification equation
+// is checked with the cofactor applied (circomlib's S·Base8 == R8 + (hm·8)·A),
+// so a torsion component cannot turn an invalid signature into a valid one.
+static int zkn_frost_load_oncurve(zkn_edcurve_t *curve, uint8_t *x_be, uint8_t *y_be,
+                                  zkn_edpoint_t *out)
+{
+  bool on_curve = false;
+
+  ZKN_ERROR_INIT();
+
+  ZKN_CHECK(tEdwards_init(curve, x_be, y_be, out));
+  ZKN_CHECK(tEdwards_IsOnCurve(curve, out, &on_curve));
+  if (!on_curve)
+  {
+    error = ZKN_ERR_INVALID_PARAM;
+    goto end;
+  }
+
+  ZKN_ERROR_CLOSE();
+}
+
 // def compute_group_commitment(commitment_list, binding_factor_list): of RFC9591
 // hypothesis: a commitment list is a list of 5-uples of curve->fieldsize8 elements, i.e Id, hidingnonce_x, hidingnonce_y, binding_nonce_x, binding_nonce_y
 // big endian encodings
@@ -294,13 +332,15 @@ int zkn_compute_group_commitment(zkn_edcurve_t *curve, uint8_t *commitment_list,
     // Extract and accumulate hiding nonce commitment
     size_t hiding_x_offset = curve->fieldsize8 * (5 * i + 1);
     size_t hiding_y_offset = curve->fieldsize8 * (5 * i + 2);
-    ZKN_CHECK(tEdwards_init(curve, commitment_list + hiding_x_offset, commitment_list + hiding_y_offset, &T1));
+    ZKN_CHECK(zkn_frost_load_oncurve(curve, commitment_list + hiding_x_offset,
+                                     commitment_list + hiding_y_offset, &T1));
     ZKN_CHECK(tEdwards_add(curve, R, &T1, R));
 
     // Extract binding nonce commitment and scale by binding factor
     size_t binding_x_offset = curve->fieldsize8 * (5 * i + 3);
     size_t binding_y_offset = curve->fieldsize8 * (5 * i + 4);
-    ZKN_CHECK(tEdwards_init(curve, commitment_list + binding_x_offset, commitment_list + binding_y_offset, &T1));
+    ZKN_CHECK(zkn_frost_load_oncurve(curve, commitment_list + binding_x_offset,
+                                     commitment_list + binding_y_offset, &T1));
 
     uint8_t *bindingfactor = bindingFactorList + (curve->fieldsize8 * i);
     ZKN_CHECK(tEdwards_scalarMul(curve, &T1, bindingfactor, curve->fieldsize8, &T2));
