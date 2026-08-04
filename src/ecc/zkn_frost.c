@@ -173,15 +173,24 @@ int zkn_evalshare(zkn_edcurve_t *curve, zkn_bn_t *Polynomial, size_t degree, zkn
 int zkn_frost_nonce_generate(zkn_edcurve_t *curve, uint8_t *secret, uint8_t *out)
 {
   ZKN_ERROR_INIT();
-  uint8_t buffer[64];
-  zkn_rng(buffer, 32);
-  memcpy(buffer + 32, secret, 32);
+  /* buffer holds (random || secret_key_share) fed to H3. Both halves are
+   * sensitive — the random half controls FROST nonce quality (a
+   * predictable nonce leaks the scalar via a biased-nonce lattice attack),
+   * the secret half is the raw key share. Wipe on every exit. */
+  uint8_t buffer[64] = {0};
   zkn_bn_t h_output;
+  /* Checked RNG: a silent RNG failure would leave `buffer[0..32]` as stack
+   * residue, which combined with the secret gives an adversary partial
+   * control of the nonce hash. Treat non-OK as fatal. */
+  if (zkn_rng_checked(buffer, 32) != 0) { error = ZKN_KO; goto end; }
+  memcpy(buffer + 32, secret, 32);
   ZKN_CHECK(zkn_bn_alloc(&h_output, curve->fieldsize8));
   ZKN_CHECK(Babyfrost_H3(buffer, 64, curve->order, h_output));
   ZKN_CHECK(zkn_bn_export(h_output, out, curve->fieldsize8));
   ZKN_CHECK(zkn_bn_destroy(&h_output));
-  ZKN_ERROR_CLOSE();
+end: __attribute__((unused))
+  explicit_bzero(buffer, sizeof(buffer));
+  return error;
 }
 
 /*

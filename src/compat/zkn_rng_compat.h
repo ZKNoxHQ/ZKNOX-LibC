@@ -21,9 +21,12 @@
 #  include "cx.h"
 #  define zkn_rng(buf, len)                  cx_rng((buf), (len))
 #  define zkn_trng_get_random_data(buf, len) cx_rng((buf), (len))
+/* Checked variant: cx_get_random_bytes returns cx_err_t; 0 on success. */
+#  define zkn_rng_checked(buf, len)          ((cx_get_random_bytes((buf), (len)) == CX_OK) ? 0 : -1)
 #else
    void zkn_rng(uint8_t *buf, size_t len);
    void zkn_trng_get_random_data(uint8_t *buf, size_t len);
+   int  zkn_rng_checked(uint8_t *buf, size_t len);
 #endif
 
 #endif /* ZKN_RNG_COMPAT_H */

@@ -28,29 +28,38 @@ void zkn_trng_get_random_data(uint8_t *buf, size_t len) {
     random_buffer(buf, len);
 }
 
+int zkn_rng_checked(uint8_t *buf, size_t len) {
+    random_buffer(buf, len);
+    return 0;
+}
+
 #else
 /* Default host: /dev/urandom */
 #include <stdio.h>
 #include <stdlib.h>
 
-static void read_urandom(uint8_t *buf, size_t len) {
+static int read_urandom(uint8_t *buf, size_t len) {
     FILE *f = fopen("/dev/urandom", "rb");
-    if (!f) {
-        for (size_t i = 0; i < len; i++) buf[i] = (uint8_t)i;
-        return;
-    }
-    if (fread(buf, 1, len, f) != len) {
-        for (size_t i = 0; i < len; i++) buf[i] = (uint8_t)i;
-    }
+    if (!f) return -1;
+    int rc = (fread(buf, 1, len, f) == len) ? 0 : -1;
     fclose(f);
+    return rc;
 }
 
 void zkn_rng(uint8_t *buf, size_t len) {
-    read_urandom(buf, len);
+    if (read_urandom(buf, len) != 0) {
+        for (size_t i = 0; i < len; i++) buf[i] = (uint8_t)i;
+    }
 }
 
 void zkn_trng_get_random_data(uint8_t *buf, size_t len) {
-    read_urandom(buf, len);
+    if (read_urandom(buf, len) != 0) {
+        for (size_t i = 0; i < len; i++) buf[i] = (uint8_t)i;
+    }
+}
+
+int zkn_rng_checked(uint8_t *buf, size_t len) {
+    return read_urandom(buf, len);
 }
 
 #endif /* ZKN_RNG_TREZOR or default host */
