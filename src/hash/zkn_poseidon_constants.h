@@ -39,8 +39,20 @@ typedef struct
   uint32_t status;
 
   zkn_bn_mont_ctx_t *mont; // pointer to an already initialized montgomery context
+  /*
+   * Borrowed public handle for the modulus. cx_bn_mont_ctx_t internals are
+   * private on Ledger and must never be passed to the public cx_bn API.
+   */
+  zkn_bn_t modulus;
   zkn_bn_t state[_MAX_POSEIDON_nCELLS];
   zkn_bn_t MixColumn[_MAX_POSEIDON_nCELLS * _MAX_POSEIDON_nCELLS];
+
+  /* A full t*t MDS allocation fits in the CX pool through t=6
+   * (Poseidon-5). For Poseidon-6/7, keep the matrix in flash and stream
+   * one coefficient through mix_constant instead. */
+  const uint8_t *mix_src;
+  zkn_bn_t mix_constant;
+  uint8_t stream_mix;
 
 #ifdef _DYN_GEN
   uint64_t grain_state[2];
@@ -58,7 +70,11 @@ typedef struct
 /* functions        */
 /****************** */
 
-int Poseidon_alloc_init(poseidon_ctx_t *ctx, uint32_t pow, size_t nb_inputs, zkn_bn_mont_ctx_t *initialized_montctx);
+int Poseidon_alloc_init(poseidon_ctx_t *ctx,
+                        uint32_t pow,
+                        size_t nb_inputs,
+                        zkn_bn_mont_ctx_t *initialized_montctx,
+                        const zkn_bn_t modulus);
 int Poseidon_destroy(poseidon_ctx_t *ctx);
 void Poseidon_getNext_RC(poseidon_ctx_t *ctx, uint64_t out[4]);
 

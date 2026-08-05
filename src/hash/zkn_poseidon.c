@@ -54,7 +54,7 @@ int zkn_poseidon_hash(const uint8_t *inputs,
     if (zkn_mont_alloc(&montctx, 32) != ZKN_OK) goto cleanup;
     if (zkn_mont_init(&montctx, modulus) != ZKN_OK) goto cleanup;
 
-    if (zkn_poseidon_init(&ctx, 5, nb_inputs, &montctx) != ZKN_OK) goto cleanup;
+    if (zkn_poseidon_init(&ctx, 5, nb_inputs, &montctx, modulus) != ZKN_OK) goto cleanup;
     ctx_inited = true;
 
     /* Audit: Poseidon input reduction mod p.

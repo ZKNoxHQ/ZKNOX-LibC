@@ -892,8 +892,11 @@ static const size_t POSEIDON_NROUNDS_P_TABLE[] = {
 int zkn_poseidon_init(poseidon_soft_ctx_t *ctx,
                       uint32_t pow,
                       size_t nb_inputs,
-                      zkn_bn_mont_ctx_t *montctx)
+                      zkn_bn_mont_ctx_t *montctx,
+                      const zkn_bn_t modulus)
 {
+    (void)modulus; /* SW montctx exposes its modulus; CX receives it explicitly. */
+
     if (nb_inputs == 0 || nb_inputs > POSEIDON_MAX_INPUTS)
         return ZKN_INVALID_PARAM;
 

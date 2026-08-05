@@ -27,7 +27,7 @@ typedef struct
 {
   size_t curveID;
   size_t fieldsize8;
-  zkn_bn_t modulus; // could be spared cause copied in ctx.n
+  zkn_bn_t modulus; // public handle; cx_bn_mont_ctx_t internals are private
   zkn_bn_t order;
 
   zkn_edpoint_t G; // curve generating point

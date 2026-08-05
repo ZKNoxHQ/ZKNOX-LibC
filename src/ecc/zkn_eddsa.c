@@ -178,24 +178,29 @@ int EddsaPoseidon_Sign_final(zkn_edcurve_t *curve, uint8_t *prv, zkn_edpoint_t *
   // large size not required anymore
   ZKN_CHECK(zkn_bn_destroy(&red_r));
 
-  /* Snapshot R and Pub coordinates as Montgomery-form bytes so that both
-   * points can be freed BEFORE zkn_poseidon_init allocates its 49 BN.
+  /* Snapshot R and Pub coordinates as NON-Montgomery (affine) bytes so
+   * that both points can be freed BEFORE zkn_poseidon_init allocates its
+   * 49 BN, AND so that state[1..4] can be loaded via the same
+   * bn_init+to_montgomery pattern as the working arity-5 Poseidon test
+   * (handler_poseidon.c).
    *
-   * Pre-patch the peak sat at ~58/64 with R(3) + Pub(3) + Ctx(49) + hm(1)
-   * + curve residue all alive at once. SDK transients inside cx_bn_reduce
-   * / cx_bn_mod_mul (a few slots each) pushed us over 64 and wiped the
-   * device. Releasing R + Pub here drops the peak by 6, leaving ~52/64
-   * with real headroom for the SDK's internal allocations.
+   * Coordinates must cross the release/reload boundary in their raw affine
+   * representation. Reloading Montgomery-form bytes with cx_bn_init bypasses
+   * the required domain conversion and caused the former CX signing fault at
+   * Poseidon's first multiplication.
    *
-   * Bytes are taken straight from the Montgomery-form handles — no
-   * mont_from_montgomery — and reloaded post-init via zkn_bn_init, which
-   * preserves the bit-pattern. /!\ Pub is destroyed in place; callers
-   * must not touch it after this function returns. */
-  uint8_t rx_mont[32], ry_mont[32], px_mont[32], py_mont[32];
-  ZKN_CHECK(zkn_bn_export(R.x,    rx_mont, 32));
-  ZKN_CHECK(zkn_bn_export(R.y,    ry_mont, 32));
-  ZKN_CHECK(zkn_bn_export(Pub->x, px_mont, 32));
-  ZKN_CHECK(zkn_bn_export(Pub->y, py_mont, 32));
+   * In-place from_montgomery is safe (SDK allows dst == src). /!\ Pub is
+   * destroyed in place; callers must not touch it after this function
+   * returns. */
+  uint8_t rx_raw[32], ry_raw[32], px_raw[32], py_raw[32];
+  ZKN_CHECK(zkn_mont_from_montgomery(R.x,    R.x,    &curve->ctx));
+  ZKN_CHECK(zkn_mont_from_montgomery(R.y,    R.y,    &curve->ctx));
+  ZKN_CHECK(zkn_mont_from_montgomery(Pub->x, Pub->x, &curve->ctx));
+  ZKN_CHECK(zkn_mont_from_montgomery(Pub->y, Pub->y, &curve->ctx));
+  ZKN_CHECK(zkn_bn_export(R.x,    rx_raw, 32));
+  ZKN_CHECK(zkn_bn_export(R.y,    ry_raw, 32));
+  ZKN_CHECK(zkn_bn_export(Pub->x, px_raw, 32));
+  ZKN_CHECK(zkn_bn_export(Pub->y, py_raw, 32));
 
   ZKN_CHECK(tEdwards_destroy(curve, &R));
   ZKN_CHECK(tEdwards_destroy(curve, Pub));
@@ -208,19 +213,25 @@ int EddsaPoseidon_Sign_final(zkn_edcurve_t *curve, uint8_t *prv, zkn_edpoint_t *
   // ── Poseidon hm = H(R.x, R.y, Pub.x, Pub.y, msg) ──
   // Reuses curve->ctx as the Montgomery context. R + Pub were freed above
   // so their 6 BN are no longer competing with the 49 Ctx allocs.
-  ZKN_CHECK(zkn_poseidon_init(&Ctx, 5, 5, &(curve->ctx)));
+  ZKN_CHECK(zkn_poseidon_init(&Ctx, 5, 5, &(curve->ctx), curve->modulus));
 
-  // R.x, R.y, Pub.x, Pub.y bytes are already Montgomery — load verbatim,
-  // no to_montgomery (would double-Montgomerize and produce wrong hash).
-  ZKN_CHECK(zkn_bn_init(Ctx.state[1], rx_mont, 32));
-  ZKN_CHECK(zkn_bn_init(Ctx.state[2], ry_mont, 32));
-  ZKN_CHECK(zkn_bn_init(Ctx.state[3], px_mont, 32));
-  ZKN_CHECK(zkn_bn_init(Ctx.state[4], py_mont, 32));
-  ZKN_CHECK(zkn_bn_init(Ctx.state[5], rbuff, len)); // init state5 with message
+  // Load raw affine coords + to_montgomery. Mirrors handler_poseidon.c —
+  // the working arity-5 Poseidon path always calls to_montgomery on state
+  // inputs, so we do the same here rather than the "bn_init verbatim from
+  // Montgomery bytes" shortcut that triggered the CX-sign wipe.
+  ZKN_CHECK(zkn_bn_init(Ctx.state[1], rx_raw, 32));
+  ZKN_CHECK(zkn_mont_to_montgomery(Ctx.state[1], Ctx.state[1], &curve->ctx));
+  ZKN_CHECK(zkn_bn_init(Ctx.state[2], ry_raw, 32));
+  ZKN_CHECK(zkn_mont_to_montgomery(Ctx.state[2], Ctx.state[2], &curve->ctx));
+  ZKN_CHECK(zkn_bn_init(Ctx.state[3], px_raw, 32));
+  ZKN_CHECK(zkn_mont_to_montgomery(Ctx.state[3], Ctx.state[3], &curve->ctx));
+  ZKN_CHECK(zkn_bn_init(Ctx.state[4], py_raw, 32));
+  ZKN_CHECK(zkn_mont_to_montgomery(Ctx.state[4], Ctx.state[4], &curve->ctx));
+  ZKN_CHECK(zkn_bn_init(Ctx.state[5], rbuff, len));
   ZKN_CHECK(zkn_mont_to_montgomery(Ctx.state[5], Ctx.state[5], &curve->ctx));
 
   ZKN_CHECK(zkn_bn_alloc(&hm, 32));
-  ZKN_CHECK(zkn_poseidon(&Ctx, 0, (zkn_bn_t *)hm, 1));
+  ZKN_CHECK(zkn_poseidon(&Ctx, 0, &hm, 1));
   ZKN_CHECK(zkn_mont_from_montgomery(hm, hm, &curve->ctx)); // back to normal domain
 
   /* Release the 49 cx_bn allocated by zkn_poseidon_init. No-op on SW

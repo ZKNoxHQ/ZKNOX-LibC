@@ -1,4 +1,4 @@
-/* Backend gate: this is the cx_bn-tested arity-5 Poseidon implementation.
+/* Backend gate: this is the cx_bn Poseidon implementation.
  * Only compiled on Ledger CX builds; on the SW backend the multi-arity
  * implementation in zkn_poseidon_soft.c is used instead. Callers should
  * include `zkn_poseidon.h` (the backend-selecting wrapper) rather than
@@ -142,7 +142,9 @@ void gen_integer(uint64_t state[2], uint64_t out[4])
   out[3] = rev64(out[3]);
 }
 
-// those constants are stored in raw format, todo: convert to montgomery representation
+// Arity 1..5 keeps the MDS matrix preloaded in Montgomery form. Arity 6/7
+// streams one raw flash coefficient at a time to stay below the CX BN-pool
+// limit (a full 7x7 or 8x8 matrix cannot coexist with the state and caller).
 static int Poseidon_Mix(poseidon_ctx_t *ctx)
 {
   ZKN_ERROR_INIT();
@@ -152,8 +154,24 @@ static int Poseidon_Mix(poseidon_ctx_t *ctx)
     ZKN_CHECK(zkn_bn_set_u32(ctx->tmp[i], 0));
     for (size_t j = 0; j < ctx->nb_state_cells; j++)
     {
-      ZKN_CHECK(zkn_mont_mul(ctx->temp, ctx->state[j], ctx->MixColumn[(i * ctx->nb_state_cells) + j], ctx->mont));
-      ZKN_CHECK(zkn_bn_mod_add(ctx->tmp[i], ctx->tmp[i], ctx->temp, ctx->mont->n));
+      zkn_bn_t mix;
+      if (ctx->stream_mix)
+      {
+        size_t offset = ctx->fieldsize8 * (i * ctx->nb_state_cells + j);
+        ZKN_CHECK(zkn_bn_init(ctx->mix_constant,
+                              ctx->mix_src + offset,
+                              ctx->fieldsize8));
+        ZKN_CHECK(zkn_mont_to_montgomery(ctx->mix_constant,
+                                         ctx->mix_constant,
+                                         ctx->mont));
+        mix = ctx->mix_constant;
+      }
+      else
+      {
+        mix = ctx->MixColumn[(i * ctx->nb_state_cells) + j];
+      }
+      ZKN_CHECK(zkn_mont_mul(ctx->temp, ctx->state[j], mix, ctx->mont));
+      ZKN_CHECK(zkn_bn_mod_add(ctx->tmp[i], ctx->tmp[i], ctx->temp, ctx->modulus));
     }
   }
 
@@ -423,13 +441,16 @@ static const uint8_t POSEIDON7_MIXCOLUMN[64 * 32] = {
 };
 
 // allocate Poseidon structure
-int Poseidon_alloc_init(poseidon_ctx_t *ctx, uint32_t pow, size_t nb_inputs, zkn_bn_mont_ctx_t *initialized_montctx)
+int Poseidon_alloc_init(poseidon_ctx_t *ctx,
+                        uint32_t pow,
+                        size_t nb_inputs,
+                        zkn_bn_mont_ctx_t *initialized_montctx,
+                        const zkn_bn_t modulus)
 {
   ZKN_ERROR_INIT();
 
-  /* Reject anything outside 1..7. The matrices live in flash; runtime cost
-   * of supporting the higher arities is the per-call cx_bn allocations
-   * for t² MDS entries (64 for t=8). Targeted at Nano S+ / X / Stax. */
+  /* Reject anything outside 1..7. Matrices live in flash. Arity 1..5
+   * preloads the matrix; arity 6/7 streams coefficients to fit the pool. */
   if (nb_inputs == 0 || nb_inputs > _MAX_POSEIDON_INPUT) {
     return ZKN_NOT_INITIALIZED;
   }
@@ -443,6 +464,8 @@ int Poseidon_alloc_init(poseidon_ctx_t *ctx, uint32_t pow, size_t nb_inputs, zkn
   ctx->rounds_f = _POSEIDON_NROUNDS;
   ctx->rounds_p = _POSEIDON_ROUNDS_P_TABLE[t - 2];
   ctx->mont = initialized_montctx;     // pointer to an initialized montgomery context
+  ctx->modulus = modulus;              // borrowed public handle; not owned by ctx
+  ctx->stream_mix = (nb_inputs > 5);
 
 #ifdef _DYN_GEN
   init_generator(ctx->grain_state, _POSEIDON_FIELD_SIZE, t,
@@ -461,12 +484,14 @@ int Poseidon_alloc_init(poseidon_ctx_t *ctx, uint32_t pow, size_t nb_inputs, zkn
   case 7: mix_src = POSEIDON7_MIXCOLUMN; break;
   default: return ZKN_NOT_INITIALIZED;
   }
+  ctx->mix_src = mix_src;
 
-  ZKN_CHECK(zkn_bn_nbytes(initialized_montctx->n, &ctx->fieldsize8)); // size is the size of the modulus
+  ZKN_CHECK(zkn_bn_nbytes(modulus, &ctx->fieldsize8)); // size is the size of the modulus
 
   size_t size8 = ctx->fieldsize8;
 
-  // Allocate State and MixColumnMatrix
+  // Allocate state and work cells. The large arities allocate just one MDS
+  // scratch handle; smaller arities retain the faster preloaded matrix.
 
   ZKN_CHECK(zkn_bn_alloc(&(ctx->temp), size8)); // tmp
   for (size_t i = 0; i < t; i++)
@@ -474,11 +499,21 @@ int Poseidon_alloc_init(poseidon_ctx_t *ctx, uint32_t pow, size_t nb_inputs, zkn
 
     ZKN_CHECK(zkn_bn_alloc(&(ctx->state[i]), size8)); // state
     ZKN_CHECK(zkn_bn_alloc(&(ctx->tmp[i]), size8));   // tmp
+  }
 
-    for (size_t j = 0; j < t; j++)
-    { // mixcolumn
-      ZKN_CHECK(zkn_bn_alloc_init(&(ctx->MixColumn[i * t + j]), size8, mix_src + (size8 * (i * t + j)), size8));
-      ZKN_CHECK(zkn_mont_to_montgomery((ctx->MixColumn[i * t + j]), (ctx->MixColumn[i * t + j]), ctx->mont));
+  if (ctx->stream_mix)
+  {
+    ZKN_CHECK(zkn_bn_alloc(&(ctx->mix_constant), size8));
+  }
+  else
+  {
+    for (size_t i = 0; i < t; i++)
+    {
+      for (size_t j = 0; j < t; j++)
+      { // mixcolumn
+        ZKN_CHECK(zkn_bn_alloc_init(&(ctx->MixColumn[i * t + j]), size8, mix_src + (size8 * (i * t + j)), size8));
+        ZKN_CHECK(zkn_mont_to_montgomery((ctx->MixColumn[i * t + j]), (ctx->MixColumn[i * t + j]), ctx->mont));
+      }
     }
   }
 
@@ -495,14 +530,24 @@ int Poseidon_destroy(poseidon_ctx_t *ctx)
   {
     return ZKN_NOT_INITIALIZED;
   }
-  // Desallocate MixColumnMatrix
+  // Desallocate state/work cells and whichever MDS representation is live.
   for (size_t i = 0; i < ctx->nb_state_cells; i++)
   {
     ZKN_CHECK(zkn_bn_destroy(&(ctx->state[i]))); // state
     ZKN_CHECK(zkn_bn_destroy(&(ctx->tmp[i])));   // tmp
-    for (size_t j = 0; j < ctx->nb_state_cells; j++)
+  }
+  if (ctx->stream_mix)
+  {
+    ZKN_CHECK(zkn_bn_destroy(&(ctx->mix_constant)));
+  }
+  else
+  {
+    for (size_t i = 0; i < ctx->nb_state_cells; i++)
     {
-      ZKN_CHECK(zkn_bn_destroy(&(ctx->MixColumn[i * ctx->nb_state_cells + j])));
+      for (size_t j = 0; j < ctx->nb_state_cells; j++)
+      {
+        ZKN_CHECK(zkn_bn_destroy(&(ctx->MixColumn[i * ctx->nb_state_cells + j])));
+      }
     }
   }
 
@@ -527,7 +572,7 @@ static int Poseidon_AddRoundC(poseidon_ctx_t *ctx)
     Poseidon_getNext_RC(ctx, rc);
     ZKN_CHECK(zkn_bn_init(*rc_bn, (uint8_t *)rc, size8));         // todo: montgomerize the constants
     ZKN_CHECK(zkn_mont_to_montgomery(*rc_bn, *rc_bn, ctx->mont)); // todo: montgomerize the constants
-    ZKN_CHECK(zkn_bn_mod_add(ctx->state[i], *rc_bn, ctx->state[i], ctx->mont->n));
+    ZKN_CHECK(zkn_bn_mod_add(ctx->state[i], *rc_bn, ctx->state[i], ctx->modulus));
   }
 
   // ZKN_CHECK(zkn_bn_destroy(&rc_bn));
@@ -585,6 +630,7 @@ int Poseidon(poseidon_ctx_t *ctx, uint32_t initState, zkn_bn_t *out, size_t size
     }
 
     ZKN_CHECK(Poseidon_Mix(ctx)); // matricial multiplication: M.state
+
   }
 
   for (size_t i = 0; i < sizeout; i++)

@@ -59,11 +59,13 @@ typedef struct {
  * @param pow        S-box exponent (5 for circomlib)
  * @param nb_inputs  Number of hash inputs (e.g. 5)
  * @param montctx    Already-initialized Montgomery context (BJJ field)
+ * @param modulus    Modulus used to initialize montctx
  */
 int zkn_poseidon_init(poseidon_soft_ctx_t *ctx,
                       uint32_t pow,
                       size_t nb_inputs,
-                      zkn_bn_mont_ctx_t *montctx);
+                      zkn_bn_mont_ctx_t *montctx,
+                      const zkn_bn_t modulus);
 
 /**
  * Compute Poseidon hash.

@@ -215,7 +215,7 @@ static void test_handler_flow(void)
     zkn_mont_init(&montctx, modulus);
 
     poseidon_soft_ctx_t Ctx;
-    check_ok("poseidon_init", zkn_poseidon_init(&Ctx, 5, 5, &montctx));
+    check_ok("poseidon_init", zkn_poseidon_init(&Ctx, 5, 5, &montctx, modulus));
 
     /* Load 5 inputs: [1, 2, 3, 4, 5] */
     uint8_t input_be[32];
@@ -268,7 +268,7 @@ static void test_all_outputs(void)
     zkn_mont_init(&montctx, modulus);
 
     poseidon_soft_ctx_t Ctx;
-    zkn_poseidon_init(&Ctx, 5, 5, &montctx);
+    zkn_poseidon_init(&Ctx, 5, 5, &montctx, modulus);
 
     uint8_t input_be[32];
     for (int i = 0; i < 5; i++) {
@@ -410,7 +410,7 @@ static void test_large_inputs(void)
     zkn_mont_init(&montctx, modulus);
 
     poseidon_soft_ctx_t Ctx;
-    check_ok("large: poseidon_init", zkn_poseidon_init(&Ctx, 5, 5, &montctx));
+    check_ok("large: poseidon_init", zkn_poseidon_init(&Ctx, 5, 5, &montctx, modulus));
 
     for (int i = 0; i < 5; i++) {
         uint8_t inp[32];

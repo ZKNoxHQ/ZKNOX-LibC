@@ -519,7 +519,7 @@ int compute_challenge(zkn_edcurve_t *curve, zkn_edpoint_t *group_commitment, uin
   }
 
   ZKN_CHECK(tEdwards_Curve_partial_destroy(curve)); // need to not overflow RAM crypto, no elliptic curve computation from here
-  ZKN_CHECK(zkn_poseidon_init(&Ctx, 5, 5, &(curve->ctx)));
+  ZKN_CHECK(zkn_poseidon_init(&Ctx, 5, 5, &(curve->ctx), curve->modulus));
 
   // initialize state with R8x, R8y, A8x, A8y, msg in montgomery representation, state[0] is initialized at 0 at calling
   ZKN_CHECK(zkn_bn_copy(Ctx.state[1], group_commitment->x)); // already in montgomery
@@ -537,7 +537,13 @@ int compute_challenge(zkn_edcurve_t *curve, zkn_edpoint_t *group_commitment, uin
 
   ZKN_CHECK(tEdwards_destroy(curve, group_commitment)); // spare memory
 
-  ZKN_CHECK(zkn_poseidon(&Ctx, 0, (zkn_bn_t *)hm, 1)); // state[0] is initialized with 0
+#ifdef ZKN_BN_BACKEND_LEDGER
+  zkn_bn_t *hm_out = &hm;
+#else
+  /* Array parameters decay to pointers on the software backend. */
+  zkn_bn_t *hm_out = (zkn_bn_t *)hm;
+#endif
+  ZKN_CHECK(zkn_poseidon(&Ctx, 0, hm_out, 1)); // state[0] is initialized with 0
 
   ZKN_CHECK(zkn_mont_from_montgomery(hm, hm, &curve->ctx)); // back to normal domain
 

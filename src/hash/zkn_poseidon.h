@@ -4,7 +4,7 @@
  * Exposes a single set of names regardless of which backend is compiled in:
  *
  *   typedef ...        zkn_poseidon_ctx_t;
- *   int zkn_poseidon_init   (ctx, pow, nb_inputs, montctx);
+ *   int zkn_poseidon_init   (ctx, pow, nb_inputs, montctx, modulus);
  *   int zkn_poseidon        (ctx, init_state, out, sizeout);
  *   int zkn_poseidon_destroy(ctx);
  *
@@ -13,10 +13,10 @@
  * Backend dispatch:
  *
  *   ZKN_BN_BACKEND_LEDGER (BACKEND=cx)
- *     - routes to the hardware-tested arity-5 implementation in
+ *     - routes to the hardware-tested variable-arity implementation in
  *       src/hash/zkn_poseidon_constants.c  (`Poseidon_alloc_init`,
  *       `Poseidon`, `Poseidon_destroy`, `poseidon_ctx_t`)
- *     - ZKN_POSEIDON_MAX_INPUTS = 5
+ *     - ZKN_POSEIDON_MAX_INPUTS = 7
  *
  *   otherwise (BACKEND=sw)
  *     - routes to the variable-arity (1..7) implementation in
@@ -46,14 +46,15 @@ extern "C" {
 
 typedef poseidon_ctx_t zkn_poseidon_ctx_t;
 
-#define ZKN_POSEIDON_MAX_INPUTS  _MAX_POSEIDON_INPUT  /* 5 on CX */
+#define ZKN_POSEIDON_MAX_INPUTS  _MAX_POSEIDON_INPUT  /* 7 on CX */
 
 static inline int zkn_poseidon_init(zkn_poseidon_ctx_t *ctx,
                                     uint32_t pow,
                                     size_t nb_inputs,
-                                    zkn_bn_mont_ctx_t *montctx)
+                                    zkn_bn_mont_ctx_t *montctx,
+                                    const zkn_bn_t modulus)
 {
-    return Poseidon_alloc_init(ctx, pow, nb_inputs, montctx);
+    return Poseidon_alloc_init(ctx, pow, nb_inputs, montctx, modulus);
 }
 
 static inline int zkn_poseidon(zkn_poseidon_ctx_t *ctx,
