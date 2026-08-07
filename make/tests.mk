@@ -10,21 +10,27 @@
 # The FROST/VSS host tests exercise gated code: their main() and the functions
 # they link sit behind ZKNOX_DEBUG / ZKN_FROST.
 #
+TEST_SRCS := $(wildcard tests/test_*.c)
+TEST_BINS := $(TEST_SRCS:tests/%.c=$(BIN)/%)
+
 # This used to be a bare `CFLAGS += -DZKNOX_DEBUG` at file scope. Make reads the
 # whole makefile before running any recipe, so that landed in EVERY compilation
 # — the libzknox.a objects included — and the ZKNOX_DEBUG switch had no effect
 # on the archive at all. `make ZKNOX_DEBUG=0` still produced a debug library.
 # A target-specific variable keeps it to the test binaries, and the `test`
-# target below re-invokes make so the archive is built to match.
+# target below re-invokes make so the archive is built to match. Keep this
+# assignment after TEST_BINS is defined: immediate expansion of an undefined
+# target list silently applies the flags to nothing.
 $(TEST_BINS): CFLAGS += -DZKNOX_DEBUG -DZKN_FROST
 
-TEST_SRCS := $(wildcard tests/test_*.c)
-TEST_BINS := $(TEST_SRCS:tests/%.c=$(BIN)/%)
-
-# The archive has to carry the gated symbols the tests link against, so build
-# it with both switches on rather than whatever the caller happened to pass.
+# The archive has to carry the gated symbols the tests link against. Compiler
+# flags are not make dependencies, so an existing production archive would be
+# considered up to date even when this recursive build enables FROST/debug.
+# Clean generated libC outputs first, then rebuild the archive and tests with
+# both switches on.
 .PHONY: test
 test:
+	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory ZKNOX_DEBUG=1 ZKN_FROST=1 run-tests
 
 .PHONY: run-tests
