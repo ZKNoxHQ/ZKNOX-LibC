@@ -15,7 +15,8 @@ typedef enum
 {
     KEY_TYPE_7702 = 1,     // secp256k1 — EIP-7702 delegation slot (m/7702'/1984'/account'/0/0)
     KEY_TYPE_SPENDING = 3, // BabyJubjub
-    KEY_TYPE_VIEWING = 4   // Ed25519
+    KEY_TYPE_VIEWING = 4,  // Ed25519
+    KEY_TYPE_DKG_COMM = 5  // Ed25519 — non-exported DKG transport identity
 } key_type_t;
 
 // Public key output formats
@@ -33,6 +34,7 @@ typedef enum
 // Purpose
 #define PURPOSE_BIP44 (44 | HARDENED)
 #define PURPOSE_VIEWING (420 | HARDENED)
+#define PURPOSE_DKG_COMM (421 | HARDENED)
 
 // Coin types
 #define COIN_TYPE_RAILGUN (1984 | HARDENED)
@@ -47,7 +49,8 @@ typedef enum
 
 // ---------------------------------------------------------------------------
 // SLIP-0010 extended seed key for Railgun (BabyJubjub domain)
-// Both spending (BabyJubjub) and viewing (Ed25519) keys share this seed key.
+// Spending (BabyJubjub), viewing (Ed25519), and the isolated DKG transport
+// identity (Ed25519) share this SLIP-0010 master seed key but use distinct paths.
 // This matches the Railway Wallet / circomlibjs reference implementation:
 //   master = HMAC-SHA512(key="babyjubjub seed", data=BIP39_seed)
 //   child  = SLIP-0010 hardened derivation
@@ -70,6 +73,13 @@ static const uint32_t PATH_SPENDING[] = {
 static const uint32_t PATH_VIEWING[] = {
     PURPOSE_VIEWING, COIN_TYPE_RAILGUN, (0 | HARDENED), (0 | HARDENED), (0 | HARDENED)}; // m/420'/1984'/0'/0'/0'  — all hardened (SLIP-0010 requirement)
 
+/* Dedicated, non-exported Ed25519 identity for DKG share transport.
+ * It must not be a child of PATH_VIEWING: VIEWING_PRIVKEY intentionally
+ * exports that path's seed to scanning software. A separate hardened purpose
+ * makes possession of the viewing seed insufficient to derive this key. */
+static const uint32_t PATH_DKG_COMM[] = {
+    PURPOSE_DKG_COMM, COIN_TYPE_RAILGUN, (0 | HARDENED), (0 | HARDENED), (0 | HARDENED)}; // m/421'/1984'/0'/0'/0'
+
 #define PATH_LEN 5
 
 // Public key sizes
@@ -84,7 +94,8 @@ static const uint32_t PATH_VIEWING[] = {
  * Derive private key from seed.
  *
  * For secp256k1 (KEY_TYPE_7702): standard BIP32 on m/7702'/1984'/account'/0/0.
- * For Railgun (SPENDING, VIEWING): SLIP-0010 extended with "babyjubjub seed".
+ * For Railgun (SPENDING, VIEWING, DKG_COMM): SLIP-0010 extended with
+ * "babyjubjub seed"; every role has a distinct hardened path.
  * @param type       Key type (determines path, curve, and seed key)
  * @param account    Account index (path level 2: m/purpose'/coin'/account'/...)
  * @param out_key    32 bytes output for private key
@@ -96,11 +107,12 @@ zkn_error_t derive_private_key(key_type_t type, uint32_t account, uint8_t *out_k
 /**
  * Derive Railgun key using SLIP-0010 extended with "babyjubjub seed".
  *
- * Used for both spending (BabyJubjub) and viewing (Ed25519) keys.
+ * Used for spending (BabyJubjub), viewing, and DKG transport (both Ed25519).
  * The derivation mechanics are identical — only the path differs.
  * The 32-byte output is interpreted as:
  *   - Spending: BabyJubjub private key (input to EdDSA prv2pub)
  *   - Viewing: Ed25519 private key (input to Ed25519 pubkey derivation)
+ *   - DKG transport: Ed25519 private seed; never exported in production
  *
  * @param path       BIP-44 path (all levels hardened)
  * @param out_key    32 bytes output

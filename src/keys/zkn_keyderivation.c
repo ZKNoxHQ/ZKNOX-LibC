@@ -75,6 +75,13 @@ zkn_error_t derive_private_key(key_type_t type, uint32_t account, uint8_t *out_k
         path[2] = account | HARDENED;
         return derive_railgun_key(path, out_key, out_chain);
 
+    case KEY_TYPE_DKG_COMM:
+        // Dedicated DKG transport identity: m/421'/1984'/account'/0'/0'.
+        // This seed is never exported, unlike KEY_TYPE_VIEWING.
+        memcpy(path, PATH_DKG_COMM, sizeof(path));
+        path[2] = account | HARDENED;
+        return derive_railgun_key(path, out_key, out_chain);
+
     default:
         return ZKN_ERR_INVALID_PARAM;
     }
@@ -311,6 +318,7 @@ zkn_error_t derive_public_key(key_type_t type,
         return derive_pubkey_secp256k1(privkey_bytes, format, pubkey_out, pubkey_len);
 
     case KEY_TYPE_VIEWING:
+    case KEY_TYPE_DKG_COMM:
         return derive_pubkey_ed25519(privkey_bytes, format, pubkey_out, pubkey_len);
 
     case KEY_TYPE_SPENDING:
