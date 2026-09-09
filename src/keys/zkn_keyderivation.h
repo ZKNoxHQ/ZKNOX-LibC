@@ -13,7 +13,6 @@
 // Key types
 typedef enum
 {
-    KEY_TYPE_7702 = 1,     // secp256k1 — EIP-7702 delegation slot (m/7702'/1984'/account'/0/0)
     KEY_TYPE_SPENDING = 3, // BabyJubjub
     KEY_TYPE_VIEWING = 4,  // Ed25519
     KEY_TYPE_DKG_COMM = 5  // Ed25519 — non-exported DKG transport identity
@@ -39,14 +38,6 @@ typedef enum
 // Coin types
 #define COIN_TYPE_RAILGUN (1984 | HARDENED)
 
-// Purpose for the EIP-7702 delegation slot. 7702 is not a registered
-// BIP-44 purpose — it's a project-local convention chosen to isolate
-// this key from any standard Ethereum (m/44'/60') key the user might
-// hold elsewhere. Critical: an EIP-7702 delegation acts on the full
-// EOA, so its signing key must never collide with a key signed by
-// MetaMask, Ledger Live, Rabby, etc.
-#define PURPOSE_7702 (7702 | HARDENED)
-
 // ---------------------------------------------------------------------------
 // SLIP-0010 extended seed key for Railgun (BabyJubjub domain)
 // Spending (BabyJubjub), viewing (Ed25519), and the isolated DKG transport
@@ -63,9 +54,6 @@ typedef enum
 // Account index sits at PATH[2] (hardened) for every type.
 // derive_private_key() overwrites PATH[2] with the caller's account
 // before invoking the platform derivation.
-
-static const uint32_t PATH_7702[] = {
-    PURPOSE_7702, COIN_TYPE_RAILGUN, HARDENED, 0, 0}; // m/7702'/1984'/0'/0/0  (PATH[2] is overwritten with account')
 
 static const uint32_t PATH_SPENDING[] = {
     PURPOSE_BIP44, COIN_TYPE_RAILGUN, (0 | HARDENED), (0 | HARDENED), (0 | HARDENED)}; // m/44'/1984'/0'/0'/0'  — all hardened (SLIP-0010 requirement)
@@ -93,7 +81,6 @@ static const uint32_t PATH_DKG_COMM[] = {
 /**
  * Derive private key from seed.
  *
- * For secp256k1 (KEY_TYPE_7702): standard BIP32 on m/7702'/1984'/account'/0/0.
  * For Railgun (SPENDING, VIEWING, DKG_COMM): SLIP-0010 extended with
  * "babyjubjub seed"; every role has a distinct hardened path.
  * @param type       Key type (determines path, curve, and seed key)

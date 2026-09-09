@@ -51,18 +51,6 @@ zkn_error_t derive_private_key(key_type_t type, uint32_t account, uint8_t *out_k
 
     switch (type)
     {
-    case KEY_TYPE_7702:
-        // EIP-7702 delegation slot: m/7702'/1984'/account'/0/0.
-        // Isolated from any m/44'/60' Ethereum key the user might use
-        // elsewhere (MetaMask, Ledger Live, Rabby, ...). A 7702
-        // delegation acts on the full EOA, so its signing key must
-        // never collide with anything the user signs in another wallet.
-        memcpy(path, PATH_7702, sizeof(path));
-        path[2] = account | HARDENED;
-        return os_derive_bip32_no_throw(CX_CURVE_SECP256K1,
-                                        path, PATH_LEN,
-                                        out_key, out_chain);
-
     case KEY_TYPE_SPENDING:
         // SLIP-0010 extended with "babyjubjub seed": m/44'/1984'/account'/0'/0'
         memcpy(path, PATH_SPENDING, sizeof(path));
@@ -314,9 +302,6 @@ zkn_error_t derive_public_key(key_type_t type,
 {
     switch (type)
     {
-    case KEY_TYPE_7702:
-        return derive_pubkey_secp256k1(privkey_bytes, format, pubkey_out, pubkey_len);
-
     case KEY_TYPE_VIEWING:
     case KEY_TYPE_DKG_COMM:
         return derive_pubkey_ed25519(privkey_bytes, format, pubkey_out, pubkey_len);
