@@ -499,3 +499,78 @@ void zkn_g1_384_msm(zkn_g1_384_t *r,
         zkn_g1_384_add(r, r, &partial, ctx);
     }
 }
+
+/* ══════════════════════════════════════════════════════════════════════
+ *  Input validation (untrusted encodings)
+ *
+ *  Added by the security review: the verifiers deserialised proof points
+ *  with from_affine() and nothing else, so off-curve points, points outside
+ *  the prime-order subgroup and non-canonical coordinates (x and x + p) were
+ *  all accepted, and public inputs >= r aliased to (input mod r).
+ * ══════════════════════════════════════════════════════════════════════ */
+
+/* p (base field) and r (scalar field / subgroup order), big-endian */
+static const uint8_t BLS12_381_P_BE[48] = {
+    0x1a,0x01,0x11,0xea,0x39,0x7f,0xe6,0x9a,0x4b,0x1b,0xa7,0xb6,0x43,0x4b,0xac,0xd7,
+    0x64,0x77,0x4b,0x84,0xf3,0x85,0x12,0xbf,0x67,0x30,0xd2,0xa0,0xf6,0xb0,0xf6,0x24,
+    0x1e,0xab,0xff,0xfe,0xb1,0x53,0xff,0xff,0xb9,0xfe,0xff,0xff,0xff,0xff,0xaa,0xab};
+static const uint8_t BLS12_381_R_BE[32] = {
+    0x73,0xed,0xa7,0x53,0x29,0x9d,0x7d,0x48,0x33,0x39,0xd8,0x08,0x09,0xa1,0xd8,0x05,
+    0x53,0xbd,0xa4,0x02,0xff,0xfe,0x5b,0xfe,0xff,0xff,0xff,0xff,0x00,0x00,0x00,0x01};
+
+static int be_lt(const uint8_t *a, const uint8_t *b, size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        if (a[i] < b[i]) return 1;
+        if (a[i] > b[i]) return 0;
+    }
+    return 0;
+}
+
+static int all_zero(const uint8_t *a, size_t n)
+{
+    for (size_t i = 0; i < n; i++) if (a[i]) return 0;
+    return 1;
+}
+
+int zkn_bls12381_fp_is_canonical(const uint8_t be[48])
+{
+    return be_lt(be, BLS12_381_P_BE, 48);
+}
+
+int zkn_bls12381_fr_is_canonical(const uint8_t be[32])
+{
+    return be_lt(be, BLS12_381_R_BE, 32);
+}
+
+const uint8_t *zkn_bls12381_r_be(void)
+{
+    return BLS12_381_R_BE;
+}
+
+int zkn_g1_384_in_subgroup(const zkn_g1_384_t *P, const zkn_mont_ctx384_t *ctx)
+{
+    zkn_g1_384_t T;
+    zkn_g1_384_mul(&T, P, BLS12_381_R_BE, 32, ctx);
+    return zkn_g1_384_is_zero(&T);
+}
+
+int zkn_g1_384_from_be_checked(zkn_g1_384_t *P, const uint8_t buf[96],
+                               int allow_identity, int check_subgroup,
+                               const zkn_mont_ctx384_t *ctx)
+{
+    if (all_zero(buf, 96)) {               /* snarkjs zeroAffine convention */
+        if (!allow_identity) return -1;
+        zkn_g1_384_zero(P);
+        return 0;
+    }
+    if (!be_lt(buf, BLS12_381_P_BE, 48) || !be_lt(buf + 48, BLS12_381_P_BE, 48))
+        return -1;
+    zkn_fe384_t x, y;
+    zkn_fe384_from_be(x, buf);
+    zkn_fe384_from_be(y, buf + 48);
+    zkn_g1_384_from_affine(P, x, y, ctx);
+    if (!zkn_g1_384_on_curve(P, ctx)) return -1;
+    if (check_subgroup && !zkn_g1_384_in_subgroup(P, ctx)) return -1;
+    return 0;
+}

@@ -1,6 +1,7 @@
 #include <stdint.h>  // uint*_t
 #include <stdbool.h> // bool
 #include <stddef.h>  // size_t
+#include <string.h>  // memcpy, memset, explicit_bzero
 
 #include "zkn_bn.h"
 #include "zkn_hash_compat.h"
@@ -164,6 +165,54 @@ int tEdwards_IsOnCurve(zkn_edcurve_t *curve, zkn_edpoint_t *P, bool *flag)
 
   *flag = (bool)(cmp == 0);
 
+  ZKN_ERROR_CLOSE();
+}
+
+/* Big-endian a < b for equal-length byte strings (public data only). */
+static int tEdwards_be_lt(const uint8_t *a, const uint8_t *b, size_t n)
+{
+  for (size_t i = 0; i < n; i++)
+  {
+    if (a[i] < b[i]) return 1;
+    if (a[i] > b[i]) return 0;
+  }
+  return 0;
+}
+
+/* Load an affine point from untrusted big-endian coordinates and validate it:
+ *   - both coordinates canonical (< p): x and x + p would otherwise denote the
+ *     same point while hashing/encoding differently (malleability);
+ *   - the point satisfies the curve equation.
+ * Returns ZKN_ERR_INVALID_PARAM if either check fails. o_R must be allocated. */
+int tEdwards_init_checked(zkn_edcurve_t *curve, const uint8_t *i_x, const uint8_t *i_y, zkn_edpoint_t *o_R)
+{
+  ZKN_ERROR_INIT();
+  uint8_t p_be[ECC_MAXSIZE8];
+  bool on_curve = false;
+
+  ZKN_CHECK(zkn_bn_export(curve->modulus, p_be, curve->fieldsize8));
+  if (!tEdwards_be_lt(i_x, p_be, curve->fieldsize8) || !tEdwards_be_lt(i_y, p_be, curve->fieldsize8))
+  {
+    error = ZKN_ERR_INVALID_PARAM;
+    goto end;
+  }
+  ZKN_CHECK(tEdwards_init(curve, (uint8_t *)i_x, (uint8_t *)i_y, o_R));
+  ZKN_CHECK(tEdwards_IsOnCurve(curve, o_R, &on_curve));
+  if (!on_curve)
+    error = ZKN_ERR_INVALID_PARAM;
+
+  ZKN_ERROR_CLOSE();
+}
+
+/* *flag = (P is the neutral element (0 : z : z)). */
+int tEdwards_IsNeutral(zkn_edcurve_t *curve, zkn_edpoint_t *P, bool *flag)
+{
+  ZKN_ERROR_INIT();
+  int cx = 1, cyz = 1;
+  ZKN_CHECK(zkn_bn_cmp_u32(P->x, 0, &cx));
+  ZKN_CHECK(zkn_bn_cmp(P->y, P->z, &cyz));
+  *flag = (cx == 0 && cyz == 0);
+  ZKN_UNUSED(curve);
   ZKN_ERROR_CLOSE();
 }
 
@@ -439,10 +488,19 @@ int tEdwards_Coronize(zkn_edcurve_t *curve, zkn_edpoint_t *G)
   ZKN_ERROR_INIT();
   uint8_t buf[ECC_MAXSIZE8];
 
+  int is_zero = 1;
+
   zkn_trng_get_random_data(buf, curve->fieldsize8);
 
   ZKN_CHECK(zkn_bn_init(curve->a, buf, curve->fieldsize8));
   ZKN_CHECK(zkn_bn_reduce(curve->b, curve->a, curve->modulus));
+  /* A zero blinding factor would collapse (X:Y:Z) to (0:0:0), which is not a
+   * point and poisons every subsequent addition. Fall back to 1 (no blinding
+   * for this call) rather than corrupting the result. */
+  ZKN_CHECK(zkn_bn_cmp_u32(curve->b, 0, &is_zero));
+  if (is_zero == 0)
+    ZKN_CHECK(zkn_bn_set_u32(curve->b, 1));
+  explicit_bzero(buf, sizeof(buf));
   ZKN_CHECK(zkn_mont_to_montgomery(curve->b, curve->b, &curve->ctx));
 
   ZKN_CHECK(zkn_mont_mul(curve->c, G->x, curve->b, &curve->ctx));
@@ -487,7 +545,12 @@ int tEdwards_scalarMul_bn(zkn_edcurve_t *curve, zkn_edpoint_t *G, zkn_bn_t *k, z
 
   if (cmp == 0)
   {
+    /* SECURITY: return here. The old code fell through into the leading-bit
+     * search below, which never finds a set bit for k = 0 and decrements
+     * `pos` forever (zkn_bn_tst_bit returns 0 for out-of-range indices).
+     * A signature with S = 0 handed to zkn_frost_verify hung the verifier. */
     ZKN_CHECK(tEdwards_SetNeutral(curve, R));
+    goto end;
   }
 
   size_t Pos;
@@ -500,6 +563,7 @@ int tEdwards_scalarMul_bn(zkn_edcurve_t *curve, zkn_edpoint_t *G, zkn_bn_t *k, z
   curve->debug = 2;
   while (cmp2 != 1)
   {
+    if (pos < 0) { error = ZKN_ERR_INVALID_PARAM; goto end; } /* defensive */
     ZKN_CHECK(zkn_bn_tst_bit(*k, (uint32_t)pos, &cmp2));
     pos--;
   }
@@ -511,13 +575,13 @@ int tEdwards_scalarMul_bn(zkn_edcurve_t *curve, zkn_edpoint_t *G, zkn_bn_t *k, z
   while (pos >= 0)
   {
     ZKN_CHECK(tEdwards_double(curve, R, R));
-    curve->debug = curve->debug * 2;
+    /* (a `curve->debug *= 2` trace counter was removed here: signed int
+     * overflow, i.e. undefined behaviour, for every scalar > 31 bits) */
 
     ZKN_CHECK(zkn_bn_tst_bit(*k, (uint32_t)pos, &cmp2));
     if (cmp2 == 1)
     {
       ZKN_CHECK(tEdwards_add(curve, R, G, R));
-      curve->debug += 1;
     }
     pos--;
   }
@@ -539,6 +603,23 @@ int tEdwards_scalarMul(zkn_edcurve_t *curve, zkn_edpoint_t *G, const uint8_t *k,
 
   ZKN_CHECK(zkn_bn_destroy(&bnk));
 
+  ZKN_ERROR_CLOSE();
+}
+
+/* *flag = ([order]P == O), i.e. P lies in the prime-order subgroup.
+ * Variable time: only for PUBLIC points (commitments, public keys). */
+int tEdwards_IsInSubgroup(zkn_edcurve_t *curve, zkn_edpoint_t *P, bool *flag)
+{
+  ZKN_ERROR_INIT();
+  zkn_edpoint_t T;
+  uint8_t ord[ECC_MAXSIZE8];
+  *flag = false;
+  ZKN_CHECK(zkn_bn_export(curve->order, ord, curve->fieldsize8));
+  ZKN_CHECK(tEdwards_alloc(curve, &T));
+  ZKN_CHECK(tEdwards_scalarMul(curve, P, ord, curve->fieldsize8, &T));
+  ZKN_CHECK(tEdwards_normalize(curve, &T));
+  ZKN_CHECK(tEdwards_IsNeutral(curve, &T, flag));
+  ZKN_CHECK(tEdwards_destroy(curve, &T));
   ZKN_ERROR_CLOSE();
 }
 

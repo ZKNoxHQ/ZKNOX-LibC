@@ -76,6 +76,19 @@ void zkn_g2_384_mul(zkn_g2_384_t *r,
                     int scalar_len,
                     const zkn_mont_ctx384_t *ctx);
 
+/* ── Validation of untrusted encodings ─────────────────────────────── */
+
+/** 1 iff [r]Q == O. */
+int zkn_g2_384_in_subgroup(const zkn_g2_384_t *Q, const zkn_mont_ctx384_t *ctx);
+/**
+ * Load a G2 point from 192-byte BE affine x.c0||x.c1||y.c0||y.c1 and validate
+ * it (canonical, on the twist, optionally in the order-r subgroup). All-zero
+ * bytes = infinity, accepted only if allow_identity. 0 = ok, -1 = rejected.
+ */
+int zkn_g2_384_from_be_checked(zkn_g2_384_t *Q, const uint8_t buf[192],
+                               int allow_identity, int check_subgroup,
+                               const zkn_mont_ctx384_t *ctx);
+
 #ifdef __cplusplus
 }
 #endif

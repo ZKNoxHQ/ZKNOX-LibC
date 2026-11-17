@@ -125,37 +125,6 @@ static void fr_inv(zkn_fe384_t r, const zkn_fe384_t a)
  *  Point loading helpers
  * ══════════════════════════════════════════════════════════════════════ */
 
-/** Load G1 from 96-byte BE affine (x[48] || y[48]).
- *  All-zero input → identity point (Z=0). */
-static void load_g1_be(zkn_g1_384_t *P, const uint8_t buf[96],
-                       const zkn_mont_ctx384_t *ctx)
-{
-    /* Detect identity: all-zero bytes (snarkjs zeroAffine convention) */
-    int is_zero = 1;
-    for (int i = 0; i < 96 && is_zero; i++)
-        if (buf[i] != 0) is_zero = 0;
-    if (is_zero) {
-        zkn_g1_384_zero(P);
-        return;
-    }
-    zkn_fe384_t x, y;
-    zkn_fe384_from_be(x, buf);
-    zkn_fe384_from_be(y, buf + 48);
-    zkn_g1_384_from_affine(P, x, y, ctx);
-}
-
-/** Load G2 from 192-byte BE affine: x.c0(48)||x.c1(48)||y.c0(48)||y.c1(48). */
-static void load_g2_be(zkn_g2_384_t *Q, const uint8_t buf[192],
-                       const zkn_mont_ctx384_t *ctx)
-{
-    zkn_fp2_384_t x, y;
-    zkn_fe384_from_be(x.c0, buf);
-    zkn_fe384_from_be(x.c1, buf + 48);
-    zkn_fe384_from_be(y.c0, buf + 96);
-    zkn_fe384_from_be(y.c1, buf + 144);
-    zkn_g2_384_from_affine(Q, &x, &y, ctx);
-}
-
 /* ══════════════════════════════════════════════════════════════════════
  *  Fiat-Shamir transcript helpers
  * ══════════════════════════════════════════════════════════════════════ */
@@ -190,7 +159,13 @@ int zkn_plonk_verify(const zkn_plonk_vk_t    *vk,
                      int                        n_pub,
                      const zkn_mont_ctx384_t   *fp_ctx)
 {
+    if (vk == NULL || proof == NULL || (n_pub > 0 && pub == NULL))
+        return -1;
     if (n_pub != vk->n_public || n_pub < 0 || n_pub > ZKN_PLONK_MAX_PUB)
+        return -1;
+    /* `1 << vk->power` is undefined for power < 0 or >= 31; BLS12-381's Fr
+     * has 2-adicity 32 and snarkjs domains stop at 2^28. */
+    if (vk->power < 1 || vk->power > 28)
         return -1;
 
     const int n = 1 << vk->power;
@@ -198,33 +173,54 @@ int zkn_plonk_verify(const zkn_plonk_vk_t    *vk,
     /* ── 0. Ensure Fr context is initialized ─────────────────────── */
     (void)fr_ctx();
 
-    /* ── 1. Load proof points ────────────────────────────────────── */
+    /* ── 0b. Scalars must be canonical (< r) ─────────────────────────
+     * The transcript hashes the raw bytes while the arithmetic reduces mod r,
+     * so pub[i] and pub[i] + r were the same statement with two encodings
+     * (the classic public-input aliasing bug), and evaluations had the same
+     * malleability. */
+    for (int i = 0; i < n_pub; i++)
+        if (!zkn_bls12381_fr_is_canonical(pub[i])) return 0;
+    if (!zkn_bls12381_fr_is_canonical(proof->eval_a)  ||
+        !zkn_bls12381_fr_is_canonical(proof->eval_b)  ||
+        !zkn_bls12381_fr_is_canonical(proof->eval_c)  ||
+        !zkn_bls12381_fr_is_canonical(proof->eval_s1) ||
+        !zkn_bls12381_fr_is_canonical(proof->eval_s2) ||
+        !zkn_bls12381_fr_is_canonical(proof->eval_zw))
+        return 0;
+
+    /* ── 1. Load proof points ────────────────────────────────────────
+     * Validated: canonical coordinates, on the curve, in the order-r
+     * subgroup. The all-zero encoding (snarkjs zeroAffine) is the point at
+     * infinity and stays legal. */
 
     zkn_g1_384_t pA, pB, pC, pZ, pT1, pT2, pT3, pWxi, pWxiw;
-    load_g1_be(&pA,    proof->A,    fp_ctx);
-    load_g1_be(&pB,    proof->B,    fp_ctx);
-    load_g1_be(&pC,    proof->C,    fp_ctx);
-    load_g1_be(&pZ,    proof->Z,    fp_ctx);
-    load_g1_be(&pT1,   proof->T1,   fp_ctx);
-    load_g1_be(&pT2,   proof->T2,   fp_ctx);
-    load_g1_be(&pT3,   proof->T3,   fp_ctx);
-    load_g1_be(&pWxi,  proof->Wxi,  fp_ctx);
-    load_g1_be(&pWxiw, proof->Wxiw, fp_ctx);
+    if (zkn_g1_384_from_be_checked(&pA,    proof->A,    1, 1, fp_ctx) ||
+        zkn_g1_384_from_be_checked(&pB,    proof->B,    1, 1, fp_ctx) ||
+        zkn_g1_384_from_be_checked(&pC,    proof->C,    1, 1, fp_ctx) ||
+        zkn_g1_384_from_be_checked(&pZ,    proof->Z,    1, 1, fp_ctx) ||
+        zkn_g1_384_from_be_checked(&pT1,   proof->T1,   1, 1, fp_ctx) ||
+        zkn_g1_384_from_be_checked(&pT2,   proof->T2,   1, 1, fp_ctx) ||
+        zkn_g1_384_from_be_checked(&pT3,   proof->T3,   1, 1, fp_ctx) ||
+        zkn_g1_384_from_be_checked(&pWxi,  proof->Wxi,  1, 1, fp_ctx) ||
+        zkn_g1_384_from_be_checked(&pWxiw, proof->Wxiw, 1, 1, fp_ctx))
+        return 0;
 
-    /* ── 2. Load VK points ───────────────────────────────────────── */
+    /* ── 2. Load VK points (trusted: well-formedness only) ───────────── */
 
     zkn_g1_384_t vQm, vQl, vQr, vQo, vQc, vS1, vS2, vS3;
-    load_g1_be(&vQm, vk->Qm, fp_ctx);
-    load_g1_be(&vQl, vk->Ql, fp_ctx);
-    load_g1_be(&vQr, vk->Qr, fp_ctx);
-    load_g1_be(&vQo, vk->Qo, fp_ctx);
-    load_g1_be(&vQc, vk->Qc, fp_ctx);
-    load_g1_be(&vS1, vk->S1, fp_ctx);
-    load_g1_be(&vS2, vk->S2, fp_ctx);
-    load_g1_be(&vS3, vk->S3, fp_ctx);
+    if (zkn_g1_384_from_be_checked(&vQm, vk->Qm, 1, 0, fp_ctx) ||
+        zkn_g1_384_from_be_checked(&vQl, vk->Ql, 1, 0, fp_ctx) ||
+        zkn_g1_384_from_be_checked(&vQr, vk->Qr, 1, 0, fp_ctx) ||
+        zkn_g1_384_from_be_checked(&vQo, vk->Qo, 1, 0, fp_ctx) ||
+        zkn_g1_384_from_be_checked(&vQc, vk->Qc, 1, 0, fp_ctx) ||
+        zkn_g1_384_from_be_checked(&vS1, vk->S1, 1, 0, fp_ctx) ||
+        zkn_g1_384_from_be_checked(&vS2, vk->S2, 1, 0, fp_ctx) ||
+        zkn_g1_384_from_be_checked(&vS3, vk->S3, 1, 0, fp_ctx))
+        return -1;
 
     zkn_g2_384_t vX2;
-    load_g2_be(&vX2, vk->X2, fp_ctx);
+    if (zkn_g2_384_from_be_checked(&vX2, vk->X2, 0, 0, fp_ctx))
+        return -1;
 
     /* ── 3. Load proof evaluations (Fr, Montgomery) ──────────────── */
 

@@ -31,7 +31,10 @@ int zkn_prv_hash(const uint8_t *prv, uint8_t *out, size_t len)
   out[31] = out[31] | 0x40; // and the second highest bit of the last octet is set.
 
   // 3.  Interpret the buffer as the little-endian integer
-  rev256((uint64_t *)out); // from BE to LE, used to derive kpub
+  /* from LE to BE (full 32-byte reversal). Was rev256((uint64_t *)out): an
+   * unaligned uint64_t access through a uint8_t buffer (strict-aliasing UB;
+   * LDRD on an unaligned address faults on ARMv7-M). Same result. */
+  ByteSwap(out, 32);
   // rev256((uint64_t*) (out+32 ));//from BE to LE, used to sign
 
   /*
@@ -66,7 +69,7 @@ int zkn_prv2pub(zkn_edcurve_t *curve, uint8_t *prv, zkn_edpoint_t *Pub)
 
   ZKN_ERROR_INIT();
 
-  zkn_prv_hash(prv, out, curve->fieldsize8);
+  ZKN_CHECK(zkn_prv_hash(prv, out, curve->fieldsize8));
   // 3.  Interpret the buffer as the little-endian integer, forming asecret scalar s.  Perform a fixed-base scalar multiplication [s]B.
   shr3(out);
 
@@ -74,7 +77,27 @@ int zkn_prv2pub(zkn_edcurve_t *curve, uint8_t *prv, zkn_edpoint_t *Pub)
   // ZKN_CHECK(tEdwards_scalarMul(curve, &curve->G, out, curve->fieldsize8, Pub));
   ZKN_CHECK(tEdwards_normalize(curve, Pub)); // montgomery and normalized
 
-  ZKN_ERROR_CLOSE();
+end: __attribute__((unused))
+  /* out[] holds the private scalar and the nonce-derivation key. */
+  explicit_bzero(out, sizeof(out));
+  return error;
+}
+
+/* BabyJubjub base-field prime p, big-endian (message must be a field element). */
+static const uint8_t EDDSA_BJJ_P_BE[32] = {
+    0x30, 0x64, 0x4e, 0x72, 0xe1, 0x31, 0xa0, 0x29, 0xb8, 0x50, 0x45, 0xb6, 0x81, 0x81, 0x58, 0x5d,
+    0x28, 0x33, 0xe8, 0x48, 0x79, 0xb9, 0x70, 0x91, 0x43, 0xe1, 0xf5, 0x93, 0xf0, 0x00, 0x00, 0x01};
+
+/* 1 iff the 32-byte little-endian value is < p. */
+static int eddsa_msg_is_field_element(const uint8_t *msg_le)
+{
+  for (int i = 0; i < 32; i++)
+  {
+    uint8_t m = msg_le[31 - i];
+    if (m < EDDSA_BJJ_P_BE[i]) return 1;
+    if (m > EDDSA_BJJ_P_BE[i]) return 0;
+  }
+  return 0; /* equal to p */
 }
 
 // derivation of public key, in a RFC8032 way, but using babyjujub
@@ -94,6 +117,13 @@ int EddsaPoseidon_Sign_final(zkn_edcurve_t *curve, uint8_t *prv, zkn_edpoint_t *
   {
     return ZKN_WRONG_LENGTH;
   }
+  /* The message is a BabyJubjub field element (circomlib signPoseidon takes
+   * F.e(msg)). Values >= p were silently reduced inside Poseidon, so the same
+   * signature was valid for two distinct 32-byte messages (m and m + p). */
+  if (!eddsa_msg_is_field_element(msg))
+  {
+    return ZKN_ERR_INVALID_PARAM;
+  }
 
   zkn_bn_t bnbig_n; // order encoded over 64 bytes to allow reduction to be called on r
   zkn_bn_t red_r;   // r reduced over 64 bytes
@@ -102,6 +132,32 @@ int EddsaPoseidon_Sign_final(zkn_edcurve_t *curve, uint8_t *prv, zkn_edpoint_t *
   zkn_bn_t hm; // poseidon hash of the message
 
   zkn_edpoint_t R;
+  uint8_t scalar[32];
+
+  /* SECURITY — "double public key" signing oracle (key recovery).
+   *
+   * The nonce r = H(prv_hi || msg) does not depend on Pub, but the challenge
+   * hm = Poseidon(R, Pub, msg) does. The signer used to trust the
+   * caller-supplied Pub, so signing the same msg twice with two different
+   * Pub values produced S1 = r + h1*s and S2 = r + h2*s with the same r, and
+   * s = (S1 - S2) / (h1 - h2) fell out immediately (demonstrated against this
+   * library). Re-derive the public key from prv and refuse to sign if the
+   * caller's Pub does not match it. */
+  {
+    zkn_edpoint_t Pd;
+    int cx = 1, cy = 1;
+    ZKN_CHECK(tEdwards_alloc(curve, &Pd));
+    ZKN_CHECK(zkn_prv2pub(curve, prv, &Pd));     /* normalized, Montgomery */
+    ZKN_CHECK(tEdwards_normalize(curve, Pub));
+    ZKN_CHECK(zkn_bn_cmp(Pd.x, Pub->x, &cx));
+    ZKN_CHECK(zkn_bn_cmp(Pd.y, Pub->y, &cy));
+    ZKN_CHECK(tEdwards_destroy(curve, &Pd));
+    if (cx != 0 || cy != 0)
+    {
+      error = ZKN_ERR_INVALID_PARAM;
+      goto end;
+    }
+  }
 
   ZKN_CHECK(tEdwards_alloc(curve, &R));
 
@@ -166,7 +222,6 @@ int EddsaPoseidon_Sign_final(zkn_edcurve_t *curve, uint8_t *prv, zkn_edpoint_t *
   ZKN_CHECK(zkn_bn_destroy(&bn_hi));
   ZKN_CHECK(zkn_bn_destroy(&bn_lo));
 
-  uint8_t scalar[32];
   ZKN_CHECK(zkn_bn_export(red_r, scalar, 32));
   ZKN_CHECK(tEdwards_fixedBase_4MSM(curve, scalar, &R));
   // ZKN_CHECK(tEdwards_scalarMul_bn(curve, &curve->G, &red_r, &R));
@@ -262,6 +317,11 @@ int EddsaPoseidon_Sign_final(zkn_edcurve_t *curve, uint8_t *prv, zkn_edpoint_t *
 
   ZKN_CHECK(zkn_bn_export(hm, out + 64, 32)); // last part S of signature
 
+  ZKN_CHECK(zkn_bn_destroy(&hms));
+  ZKN_CHECK(zkn_bn_destroy(&bnbig_n));
+  ZKN_CHECK(zkn_bn_destroy(&bn_s));
+  ZKN_CHECK(zkn_bn_destroy(&hm));
+
   /* S17: explicit_bzero every secret-bearing stack buffer on EVERY exit
    * path (success + every ZKN_CHECK-triggered goto). sbuff[64] holds
    * the derived spending scalar (hi||lo); rbuff[64] holds intermediate
@@ -276,5 +336,13 @@ end: __attribute__((unused))
   explicit_bzero(rbuff, sizeof(rbuff));
   explicit_bzero(s_u8,  sizeof(s_u8));
   explicit_bzero(r_u8,  sizeof(r_u8));
+  explicit_bzero(scalar, sizeof(scalar)); /* the nonce r */
+#ifdef ZKN_BN_BACKEND_SW
+  /* SW bignums are stack arrays holding s, r and s*hm. (On the cx_bn backend
+   * these are pool handles; the pool is erased by cx_bn_unlock.) */
+  explicit_bzero(red_r, sizeof(red_r));
+  explicit_bzero(bn_s, sizeof(bn_s));
+  explicit_bzero(hms, sizeof(hms));
+#endif
   return error;
 }

@@ -228,21 +228,50 @@ int zkn_bn_tst_bit(const zkn_bn_t x, uint32_t n, bool *set)
 
 int zkn_bn_reduce(zkn_bn_t r, const zkn_bn_t value, const zkn_bn_t modulus)
 {
-    /* BUG FIX (v2): loop subtractions until r < modulus. A single subtraction
-     * is insufficient when value can exceed 2*modulus (e.g. BabyJubjub
-     * p ~= 0.19*2^256, where a 256-bit input can be up to ~5.3*p). */
-    memcpy(r, value, sizeof(zkn_fe256_t));
-    for (;;) {
-        zkn_limb_t tmp[8];
+    /* SECURITY: constant-time in `value`.
+     *
+     * The previous body looped `while (r >= modulus) r -= modulus`. The number
+     * of iterations (up to ~32 for the BabyJubjub subgroup order) depended on
+     * the top bits of `value`, which is secret on several paths (FROST nonce
+     * derivation via H3, Coronize blinding factors, Poseidon inputs), and a
+     * zero modulus made it spin forever.
+     *
+     * Restoring binary division instead: with s = number of leading zero bits
+     * of the (public) modulus, conditionally subtract modulus << k for
+     * k = s .. 0. The loop count depends only on the modulus, and every
+     * conditional subtraction is a mask-select. */
+    int top = ZKN_MONT_NLIMBS - 1;
+    while (top >= 0 && modulus[top] == 0) top--;
+    if (top < 0) return ZKN_INVALID_PARAM;            /* modulus == 0 */
+
+    int lz = 0;
+    for (zkn_limb_t w = modulus[top]; !(w & 0x80000000u); w <<= 1) lz++;
+    int shift = (ZKN_MONT_NLIMBS - 1 - top) * 32 + lz;   /* leading zeros of modulus */
+
+    zkn_limb_t acc[ZKN_MONT_NLIMBS];
+    memcpy(acc, value, sizeof(acc));
+
+    for (int k = shift; k >= 0; k--) {
+        /* m = modulus << k (fits in 256 bits by choice of `shift`) */
+        zkn_limb_t m[ZKN_MONT_NLIMBS];
+        int ls = k / 32, bs = k % 32;
+        for (int i = ZKN_MONT_NLIMBS - 1; i >= 0; i--) {
+            zkn_limb_t hi = (i - ls >= 0) ? modulus[i - ls] : 0;
+            zkn_limb_t lo = (bs && i - ls - 1 >= 0) ? modulus[i - ls - 1] : 0;
+            m[i] = bs ? (hi << bs) | (lo >> (32 - bs)) : hi;
+        }
+        zkn_limb_t tmp[ZKN_MONT_NLIMBS];
         zkn_limb_t borrow = 0;
-        for (int i = 0; i < 8; i++) {
-            zkn_dlimb_t d = (zkn_dlimb_t)r[i] - modulus[i] - borrow;
+        for (int i = 0; i < ZKN_MONT_NLIMBS; i++) {
+            zkn_dlimb_t d = (zkn_dlimb_t)acc[i] - m[i] - borrow;
             tmp[i] = (zkn_limb_t)d;
             borrow = (zkn_limb_t)(d >> 63);
         }
-        if (borrow) break;            /* r < modulus → done */
-        memcpy(r, tmp, sizeof(zkn_fe256_t));
+        zkn_limb_t keep = (zkn_limb_t)0 - borrow;   /* all-ones if acc < m */
+        for (int i = 0; i < ZKN_MONT_NLIMBS; i++)
+            acc[i] = (acc[i] & keep) | (tmp[i] & ~keep);
     }
+    memcpy(r, acc, sizeof(acc));
     return ZKN_OK;
 }
 

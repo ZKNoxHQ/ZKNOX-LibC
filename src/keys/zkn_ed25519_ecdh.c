@@ -27,6 +27,10 @@ static void compress_rfc(const uint8_t W[65], uint8_t out32[32])
     out32[31] |= (uint8_t)((W[32] & 1u) << 7);
 }
 
+// RFC 8032 encoding of the neutral element (x = 0, y = 1), and the cofactor.
+static const uint8_t ED25519_IDENTITY_ENC[32] = {1};
+static const uint8_t ED25519_COFACTOR_BE[32]  = {[31] = 8};
+
 int zkn_ed25519_scalarmul_compressed(const uint8_t *scalar_be32,
                                      const uint8_t *compressed_in,
                                      uint8_t *compressed_out)
@@ -35,7 +39,11 @@ int zkn_ed25519_scalarmul_compressed(const uint8_t *scalar_be32,
     //   - On input to decompress: P[0]=0x02, P[1..33] = compressed bytes.
     //   - On output: P[0]=0x04, P[1..33]=X(BE), P[33..65]=Y(BE).
     uint8_t P[65];
+    uint8_t P8[65];
+    uint8_t enc[32];
     int rc = -1;
+
+    if (!scalar_be32 || !compressed_in || !compressed_out) return -1;
 
     P[0] = 0x02;
     memcpy(P + 1, compressed_in, 32);
@@ -44,15 +52,31 @@ int zkn_ed25519_scalarmul_compressed(const uint8_t *scalar_be32,
     if (cx_edwards_decompress_point_no_throw(CX_CURVE_Ed25519, P, sizeof(P)) != CX_OK)
         goto out;
 
+    // SECURITY: reject small-order peer points. The scalar is not clamped
+    // (it is the note `random`), so nothing clears the cofactor: a low-order
+    // "viewing key" from the host makes the shared point — and the AES key
+    // SHA-256(shared) — one of at most 8 public values.
+    memcpy(P8, P, sizeof(P8));
+    if (cx_ecfp_scalar_mult_no_throw(CX_CURVE_Ed25519, P8, ED25519_COFACTOR_BE, 32) != CX_OK)
+        goto out;
+    compress_rfc(P8, enc);
+    if (memcmp(enc, ED25519_IDENTITY_ENC, 32) == 0)
+        goto out;
+
     if (cx_ecfp_scalar_mult_no_throw(CX_CURVE_Ed25519, P, scalar_be32, 32) != CX_OK)
         goto out;
 
     // Compress manually to guarantee RFC 8032 output (independent of whatever
     // format cx_edwards_compress_point_no_throw produces).
-    compress_rfc(P, compressed_out);
+    compress_rfc(P, enc);
+    if (memcmp(enc, ED25519_IDENTITY_ENC, 32) == 0)   // scalar = 0 mod L
+        goto out;
+    memcpy(compressed_out, enc, 32);
     rc = 0;
 out:
     explicit_bzero(P, sizeof(P));
+    explicit_bzero(P8, sizeof(P8));
+    explicit_bzero(enc, sizeof(enc));
     return rc;
 }
 

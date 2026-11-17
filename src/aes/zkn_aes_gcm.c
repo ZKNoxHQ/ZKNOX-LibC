@@ -19,19 +19,22 @@ int zkn_aes256_gcm_encrypt(const uint8_t *key32,
                            uint8_t *tag16)
 {
     cx_aes_gcm_context_t ctx;
-    int rc = -1;
-
-    cx_aes_gcm_init(&ctx);
-    if (cx_aes_gcm_set_key(&ctx, key32, 32) != CX_OK) goto out;
-
     // cx_aes_gcm_encrypt_and_tag takes `in` as non-const (it may operate
     // in-place); copy to a scratch buffer so we keep the const-correct API.
     // RAILGUN V2 transact-note plaintext is up to 96 B (note) + 32 B (memo)
     // = 128 B when the memo path is exercised (engine concatenates the
     // encoded memo onto the GCM input as a 4th block).
     uint8_t scratch[128];
-    if (plaintext_len > sizeof(scratch)) goto out;
-    memcpy(scratch, plaintext, plaintext_len);
+    int rc = -1;
+
+    if (!key32 || !iv16 || !tag16) return -1;
+    if (plaintext_len > sizeof(scratch)) return -1;
+    if (plaintext_len && (!plaintext || !ciphertext)) return -1;
+
+    cx_aes_gcm_init(&ctx);
+    if (cx_aes_gcm_set_key(&ctx, key32, 32) != CX_OK) goto out;
+
+    if (plaintext_len) memcpy(scratch, plaintext, plaintext_len);
 
     if (cx_aes_gcm_encrypt_and_tag(&ctx,
                                    scratch, plaintext_len,
@@ -42,6 +45,8 @@ int zkn_aes256_gcm_encrypt(const uint8_t *key32,
 
     rc = 0;
 out:
+    // scratch held the note plaintext; it used to be left on the stack.
+    explicit_bzero(scratch, sizeof(scratch));
     explicit_bzero(&ctx, sizeof(ctx));
     return rc;
 }
@@ -61,7 +66,8 @@ int zkn_aes256_gcm_encrypt_aad(const uint8_t *key32,
     uint8_t scratch[128];
     int rc = -1;
 
-    if (!key32 || !nonce || !tag16) return -1;
+    if (!key32 || !nonce || !tag16 || nonce_len == 0) return -1;
+    if (aad_len && !aad) return -1;
     if (plaintext_len > sizeof(scratch)) return -1;
     if (plaintext_len && (!plaintext || !ciphertext)) return -1;
 
@@ -94,7 +100,8 @@ int zkn_aes256_gcm_decrypt_aad(const uint8_t *key32,
     uint8_t scratch[128];
     int rc = -1;
 
-    if (!key32 || !nonce || !tag16) return -1;
+    if (!key32 || !nonce || !tag16 || nonce_len == 0) return -1;
+    if (aad_len && !aad) return -1;
     if (ciphertext_len > sizeof(scratch)) return -1;
     if (ciphertext_len && (!ciphertext || !plaintext)) return -1;
 

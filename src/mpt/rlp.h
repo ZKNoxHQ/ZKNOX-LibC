@@ -27,6 +27,7 @@ typedef enum {
     RLP_ERR_TRUNC,   /* buffer trop court */
     RLP_ERR_OVERFLOW,/* longueur encodée dépasse uint32 */
     RLP_ERR_TOOBIG,  /* item dépasse le buffer */
+    RLP_ERR_NONCANONICAL, /* encodage non minimal */
 } RlpErr;
 
 /**
@@ -40,9 +41,17 @@ typedef enum {
 static RlpErr rlp_decode(const uint8_t *buf, uint32_t buf_len,
                           RlpItem *out, uint32_t *consumed)
 {
+    /* SECURITY: the length checks used to be written `1 + llen + slen >
+     * buf_len` in uint32_t arithmetic. A long-form header carrying a length of
+     * 0xFFFFFFFF wraps that sum to `llen` and passes, returning an item whose
+     * `len` points ~4 GiB past the buffer. The long forms also accepted up to
+     * 8 length bytes, silently truncated into a uint32_t. All comparisons are
+     * now done by subtraction against the remaining space, the length-of-length
+     * is capped at 4 bytes, and non-minimal encodings are rejected. */
     if (buf_len == 0) return RLP_ERR_TRUNC;
 
     uint8_t prefix = buf[0];
+    const uint32_t rem = buf_len - 1;          /* bytes after the prefix */
 
     /* ── Single byte ── */
     if (prefix <= 0x7f) {
@@ -56,7 +65,8 @@ static RlpErr rlp_decode(const uint8_t *buf, uint32_t buf_len,
     /* ── Short string (0-55 bytes) ── */
     if (prefix <= 0xb7) {
         uint32_t slen = prefix - 0x80;
-        if (1 + slen > buf_len) return RLP_ERR_TRUNC;
+        if (slen > rem) return RLP_ERR_TRUNC;
+        if (slen == 1 && buf[1] <= 0x7f) return RLP_ERR_NONCANONICAL;
         out->type = RLP_STR;
         out->data = buf + 1;
         out->len  = slen;
@@ -64,42 +74,31 @@ static RlpErr rlp_decode(const uint8_t *buf, uint32_t buf_len,
         return RLP_OK;
     }
 
-    /* ── Long string ── */
-    if (prefix <= 0xbf) {
-        uint8_t llen = prefix - 0xb7;   /* bytes of length */
-        if (1 + llen > buf_len) return RLP_ERR_TRUNC;
-        uint32_t slen = 0;
-        for (uint8_t i = 0; i < llen; i++) slen = (slen << 8) | buf[1 + i];
-        if (1 + llen + slen > buf_len) return RLP_ERR_TRUNC;
-        out->type = RLP_STR;
+    /* ── Long string / long list share the length decoding ── */
+    if (prefix <= 0xbf || prefix > 0xf7) {
+        uint8_t llen = (prefix <= 0xbf) ? (uint8_t)(prefix - 0xb7) : (uint8_t)(prefix - 0xf7);
+        if (llen > 4) return RLP_ERR_OVERFLOW;
+        if (llen > rem) return RLP_ERR_TRUNC;
+        if (buf[1] == 0) return RLP_ERR_NONCANONICAL;          /* leading zero */
+        uint32_t plen = 0;
+        for (uint8_t i = 0; i < llen; i++) plen = (plen << 8) | buf[1 + i];
+        if (plen < 56) return RLP_ERR_NONCANONICAL;            /* should be short form */
+        if (plen > rem - llen) return RLP_ERR_TRUNC;
+        out->type = (prefix <= 0xbf) ? RLP_STR : RLP_LIST;
         out->data = buf + 1 + llen;
-        out->len  = slen;
-        *consumed = 1 + llen + slen;
+        out->len  = plen;
+        *consumed = 1 + llen + plen;
         return RLP_OK;
     }
 
     /* ── Short list (0-55 bytes payload) ── */
-    if (prefix <= 0xf7) {
+    {
         uint32_t plen = prefix - 0xc0;
-        if (1 + plen > buf_len) return RLP_ERR_TRUNC;
+        if (plen > rem) return RLP_ERR_TRUNC;
         out->type = RLP_LIST;
         out->data = buf + 1;
         out->len  = plen;
         *consumed = 1 + plen;
-        return RLP_OK;
-    }
-
-    /* ── Long list ── */
-    {
-        uint8_t llen = prefix - 0xf7;
-        if (1 + llen > buf_len) return RLP_ERR_TRUNC;
-        uint32_t plen = 0;
-        for (uint8_t i = 0; i < llen; i++) plen = (plen << 8) | buf[1 + i];
-        if (1 + llen + plen > buf_len) return RLP_ERR_TRUNC;
-        out->type = RLP_LIST;
-        out->data = buf + 1 + llen;
-        out->len  = plen;
-        *consumed = 1 + llen + plen;
         return RLP_OK;
     }
 }

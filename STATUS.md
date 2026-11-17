@@ -1,5 +1,15 @@
 # zknox-libc status
 
+## Security review (2026-11-17) — see SECURITY_AUDIT.md
+
+Fixes for 4 critical, 5 high, 6 medium and 5 low findings (EdDSA key-recovery
+oracle, Miller-loop uninitialised output, Groth16/PLONK input validation and
+public-input aliasing, FROST nonce reuse / zero nonces, VSS secret leak for
+id 0, several stack overflows, verifier DoS, predictable host RNG, ...).
+**API behaviour changes** (nonce consumption in `zkn_partial_sig`, Pub check
+in `EddsaPoseidon_Sign_final`, stricter verifiers) are listed in
+SECURITY_AUDIT.md. Regression tests: `tests/test_security_regressions.c`.
+
 ## What works (v0.2.5)
 
 ### v0.2.5 — Guard host tests with #ifdef ZKN_HOST_TESTS

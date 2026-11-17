@@ -110,10 +110,36 @@ int makeDealerCoeffsDeterministic(
     }
 
     ZKN_CHECK(zkn_bn_destroy(&coeff_bn));
-    explicit_bzero(input, sizeof(input));
 
-    ZKN_ERROR_CLOSE();
+end: __attribute__((unused))
+    /* `input` holds the dealer seed: wipe it on the error paths too
+     * (ZKN_CHECK jumps here directly). */
+    explicit_bzero(input, sizeof(input));
+#ifdef ZKN_BN_BACKEND_SW
+    explicit_bzero(coeff_bn, sizeof(coeff_bn));
+#endif
+    return error;
 }
+
+/* Participant identifiers are evaluation points of the secret polynomial.
+ * x = 0 evaluates to a0, the dealer's secret contribution. The ids are also
+ * truncated to 32 bits with (uint32_t) below, so 2^32 aliases to 0 as well. */
+static int vss_id_ok(size_t id)
+{
+    return id != 0 && (uint64_t)id <= 0xFFFFFFFFu;
+}
+
+#if defined(ZKNOX_DEBUG) || defined(ZKN_FROST)
+/* a < b, big-endian, n bytes (public data). Only verifyFeldmanShare uses it. */
+static int vss_be_lt(const uint8_t *a, const uint8_t *b, size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        if (a[i] < b[i]) return 1;
+        if (a[i] > b[i]) return 0;
+    }
+    return 0;
+}
+#endif
 
 
 /* ─────────────────────────── VSS/DKG API ───────────────────────────
@@ -175,6 +201,11 @@ int computeDealerShareForId(zkn_edcurve_t *curve, const uint8_t *coeffs,
     ZKN_ERROR_INIT();
     zkn_bn_t x;
     uint8_t xb[32];
+    /* SECURITY: id = 0 (or any id with low 32 bits zero) returned p(0) = a0,
+     * the dealer's secret. threshold = 0 made `threshold - 1` wrap and read
+     * far outside `coeffs`. */
+    if (!vss_id_ok(id)) return ZKN_ERR_INVALID_PARAM;
+    if (threshold == 0 || threshold > VSS_MAX_THRESHOLD) return ZKN_ERR_INVALID_PARAM;
     ZKN_CHECK(zkn_bn_alloc(&x, 32));
     ZKN_CHECK(zkn_bn_set_u32(x, (uint32_t)id));
     ZKN_CHECK(zkn_bn_export(x, xb, 32));
@@ -192,7 +223,15 @@ int verifyFeldmanShare(zkn_edcurve_t *curve, size_t id, const uint8_t *share,
     ZKN_ERROR_INIT();
     zkn_edpoint_t lhs, rhs, tmp, Cj;
     zkn_bn_t x;
-    uint8_t idb[32], lx[32], ly[32], rx[32], ry[32];
+    uint8_t idb[32], lx[32], ly[32], rx[32], ry[32], ord[32];
+    if (valid == NULL) return ZKN_ERR_INVALID_PARAM;
+    *valid = false;
+    /* threshold = 0 indexed commitments[-64]; id = 0 checks the share
+     * against C_0 alone. */
+    if (!vss_id_ok(id)) return ZKN_ERR_INVALID_PARAM;
+    if (threshold == 0 || threshold > VSS_MAX_THRESHOLD) return ZKN_ERR_INVALID_PARAM;
+    ZKN_CHECK(zkn_bn_export(curve->order, ord, 32));
+    if (!vss_be_lt(share, ord, 32)) return ZKN_ERR_INVALID_PARAM;
     ZKN_CHECK(zkn_bn_alloc(&x, 32));
     ZKN_CHECK(zkn_bn_set_u32(x, (uint32_t)id));
     ZKN_CHECK(zkn_bn_export(x, idb, 32));
@@ -201,6 +240,17 @@ int verifyFeldmanShare(zkn_edcurve_t *curve, size_t id, const uint8_t *share,
     ZKN_CHECK(tEdwards_alloc(curve, &rhs));
     ZKN_CHECK(tEdwards_alloc(curve, &tmp));
     ZKN_CHECK(tEdwards_alloc(curve, &Cj));
+    /* The commitments come from another dealer and are untrusted. Each C_j
+     * must be a canonical curve point in the prime-order subgroup: with
+     * off-curve or torsion points the "commitment" no longer binds a single
+     * polynomial, and C_0 becomes part of the group public key. */
+    for (size_t j = 0; j < threshold; j++)
+    {
+        bool in_sg = false;
+        ZKN_CHECK(tEdwards_init_checked(curve, commitments + j * 64, commitments + j * 64 + 32, &Cj));
+        ZKN_CHECK(tEdwards_IsInSubgroup(curve, &Cj, &in_sg));
+        if (!in_sg) { error = ZKN_ERR_INVALID_PARAM; goto end; }
+    }
     // lhs = s(i) * G
     /* lhs = s(i) * G — s(i) is the secret share just received. Fixed base,
      * constant time. */
@@ -234,6 +284,23 @@ int deriveInterpolatingValue(zkn_edcurve_t *curve, const size_t *ids, size_t num
 {
     ZKN_ERROR_INIT();
     zkn_bn_t num, den, xi, xj, tmp, res;
+    /* Validate the quorum: bounded, every id a valid evaluation point,
+     * pairwise distinct, and x_i one of them. Duplicates or ids that alias
+     * modulo 2^32 (the (uint32_t) casts below) produced a zero denominator,
+     * which Fermat "inverts" to 0 — a silent lambda = 0. */
+    if (ids == NULL || lambda == NULL || num_ids == 0 || num_ids > VSS_MAX_PARTICIPANTS)
+        return ZKN_ERR_INVALID_PARAM;
+    if (!vss_id_ok(x_i)) return ZKN_ERR_INVALID_PARAM;
+    {
+        int found = 0;
+        for (size_t a = 0; a < num_ids; a++) {
+            if (!vss_id_ok(ids[a])) return ZKN_ERR_INVALID_PARAM;
+            if (ids[a] == x_i) found = 1;
+            for (size_t b = a + 1; b < num_ids; b++)
+                if (ids[a] == ids[b]) return ZKN_ERR_INVALID_PARAM;
+        }
+        if (!found) return ZKN_ERR_INVALID_PARAM;
+    }
     ZKN_CHECK(zkn_bn_alloc(&num, 32));
     ZKN_CHECK(zkn_bn_set_u32(num, 1));
     ZKN_CHECK(zkn_bn_alloc(&den, 32));
@@ -272,6 +339,10 @@ int reconstructConstantFromShares(zkn_edcurve_t *curve, const vss_share_t *share
     size_t ids[VSS_MAX_PARTICIPANTS];
     zkn_bn_t acc, lam, si, tmp;
     uint8_t lamb[32];
+    /* ids[] has VSS_MAX_PARTICIPANTS slots; num_shares was unchecked
+     * (stack overflow). */
+    if (shares == NULL || a0 == NULL || num_shares == 0 || num_shares > VSS_MAX_PARTICIPANTS)
+        return ZKN_ERR_INVALID_PARAM;
     for (size_t k = 0; k < num_shares; k++)
         ids[k] = shares[k].id;
     ZKN_CHECK(zkn_bn_alloc(&acc, 32));
@@ -292,5 +363,12 @@ int reconstructConstantFromShares(zkn_edcurve_t *curve, const vss_share_t *share
     ZKN_CHECK(zkn_bn_destroy(&lam));
     ZKN_CHECK(zkn_bn_destroy(&si));
     ZKN_CHECK(zkn_bn_destroy(&tmp));
-    ZKN_ERROR_CLOSE();
+end: __attribute__((unused))
+#ifdef ZKN_BN_BACKEND_SW
+    /* acc is the reconstructed secret; si / tmp are share-derived. */
+    explicit_bzero(acc, sizeof(acc));
+    explicit_bzero(si, sizeof(si));
+    explicit_bzero(tmp, sizeof(tmp));
+#endif
+    return error;
 }

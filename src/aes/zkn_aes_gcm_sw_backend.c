@@ -38,7 +38,9 @@ int zkn_aes256_gcm_encrypt_aad(const uint8_t *key32, const uint8_t *nonce, size_
                                const uint8_t *plaintext, size_t plaintext_len,
                                uint8_t *ciphertext, uint8_t *tag16)
 {
-    if (!key32 || !nonce || !tag16) return -1;
+    if (!key32 || !nonce || !tag16 || nonce_len == 0) return -1;  /* empty GCM IV is forbidden */
+    if (aad_len && !aad) return -1;
+    if (plaintext_len && (!plaintext || !ciphertext)) return -1;
     zkn_sw_aes256_gcm_encrypt_aad(key32, nonce, nonce_len, aad, aad_len,
                                   plaintext, plaintext_len, ciphertext, tag16);
     return 0;
@@ -49,7 +51,9 @@ int zkn_aes256_gcm_decrypt_aad(const uint8_t *key32, const uint8_t *nonce, size_
                                const uint8_t *ciphertext, size_t ciphertext_len,
                                const uint8_t *tag16, uint8_t *plaintext)
 {
-    if (!key32 || !nonce || !tag16) return -1;
+    if (!key32 || !nonce || !tag16 || nonce_len == 0) return -1;
+    if (aad_len && !aad) return -1;
+    if (ciphertext_len && (!ciphertext || !plaintext)) return -1;
     return zkn_sw_aes256_gcm_decrypt_aad(key32, nonce, nonce_len, aad, aad_len,
                                          ciphertext, ciphertext_len, tag16, plaintext);
 }

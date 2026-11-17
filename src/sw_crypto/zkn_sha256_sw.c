@@ -19,7 +19,7 @@ static const uint32_t K[64]={
 void zkn_sw_sha256(const uint8_t*msg,size_t len,uint8_t out[32]){
   uint32_t h[8]={0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19};
   size_t total=len+1; while(total%64!=56) total++; total+=8;
-  uint8_t*m=(uint8_t*)calloc(total,1); memcpy(m,msg,len); m[len]=0x80;
+  uint8_t*m=(uint8_t*)calloc(total,1); if(!m){ fprintf(stderr,"zknox: out of memory\n"); abort(); } memcpy(m,msg,len); m[len]=0x80;
   uint64_t bits=(uint64_t)len*8; for(int i=0;i<8;i++) m[total-1-i]=(uint8_t)(bits>>(8*i));
   for(size_t o=0;o<total;o+=64){
     uint32_t w[64];

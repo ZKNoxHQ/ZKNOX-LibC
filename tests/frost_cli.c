@@ -70,6 +70,7 @@ static int cmd_partial_sign(int argc, char **argv)
   size_t len = (size_t)strtoul(argv[6], NULL, 10);
   uint8_t sk[32], gk[64], hn[32], bn[32], msg[32], lam[32];
   uint8_t clist[ZKN_FROST_MAX_SIGNERS * 160];
+  if (len == 0 || len > ZKN_FROST_MAX_SIGNERS) return 2;   /* clist is fixed-size */
   if (unhex(argv[1], sk, 32) || unhex(argv[2], gk, 64) || unhex(argv[3], hn, 32) ||
       unhex(argv[4], bn, 32) || unhex(argv[5], clist, len * 160) ||
       unhex(argv[7], msg, 32) || unhex(argv[8], lam, 32)) return 2;
@@ -88,6 +89,7 @@ static int cmd_aggregate(int argc, char **argv)
   size_t len = (size_t)strtoul(argv[2], NULL, 10);
   uint8_t gk[64], msg[32];
   uint8_t clist[ZKN_FROST_MAX_SIGNERS * 160], shares[ZKN_FROST_MAX_SIGNERS * 32];
+  if (len == 0 || len > ZKN_FROST_MAX_SIGNERS) return 2;   /* fixed-size buffers */
   if (unhex(argv[0], gk, 64) || unhex(argv[1], clist, len * 160) ||
       unhex(argv[3], msg, 32) || unhex(argv[4], shares, len * 32)) return 2;
   zkn_edcurve_t curve;

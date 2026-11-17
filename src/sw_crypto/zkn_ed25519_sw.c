@@ -57,10 +57,44 @@ static int unpack(gf r[4],const u8*p){ gf num,den,chk,t,den2,den4,den6; set25519
 /* SHA-256 (from sha256_sw.c, inlined via extern) */
 void zkn_sw_sha256(const uint8_t*msg,size_t len,uint8_t out[32]);
 
+/* SECURITY: reject input points of small order and an identity result.
+ * The ECDH scalar here is not clamped (it is the 16-byte note `random`), so
+ * nothing clears the cofactor: a host that supplies a low-order "viewing key"
+ * (e.g. the identity, encoded 01 00..00) makes [k]·VK land in a set of at most
+ * 8 points, and the note-encryption key SHA-256(shared) becomes a public
+ * constant. Also rejects non-canonical y (>= p), which unpack25519 accepted. */
+static const u8 ED25519_IDENTITY[32]={1};
+static void cpy4(gf d[4], gf s[4]){ for(int i=0;i<4;i++) set25519(d[i],s[i]); }
+static int is_identity(gf p[4]){ u8 e[32]; pack(e,p); return memcmp(e,ED25519_IDENTITY,32)==0; }
+static int is_small_order(gf q[4]){ gf t[4]; cpy4(t,q); add(t,t); add(t,t); add(t,t); return is_identity(t); }
+static int y_canonical(const u8 *p){
+ /* y = p[0..31] little-endian with the sign bit masked; reject y >= 2^255-19 */
+ static const u8 P25519[32]={0xed,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+                             0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0x7f};
+ for(int i=31;i>=0;i--){ u8 b = (i==31) ? (u8)(p[i]&0x7f) : p[i]; if(b<P25519[i]) return 1; if(b>P25519[i]) return 0; }
+ return 0; }
+static int load_peer(gf Q[4], const u8 VK[32]){
+ if(!y_canonical(VK)) return -1;
+ if(unpack(Q,VK)) return -1;
+ if(is_small_order(Q)) return -1;
+ return 0; }
+
 /* ecdh-kdf: out = SHA-256( compressed( [scalar_le]·unpack(VK) ) ). scalar is 32B little-endian. */
 int zkn_sw_ed25519_ecdh_kdf(const u8 scalar_le[32], const u8 VK[32], u8 out[32]){
- gf P[4],Q[4]; if(unpack(Q,VK)) return -1; scalarmult(P,Q,scalar_le); u8 shared[32]; pack(shared,P); zkn_sw_sha256(shared,32,out); return 0; }
+ gf P[4],Q[4]; u8 shared[32]; int rc=-1;
+ if(load_peer(Q,VK)) return -1;
+ scalarmult(P,Q,scalar_le);
+ if(is_identity(P)) goto done;              /* scalar = 0 mod L */
+ pack(shared,P); zkn_sw_sha256(shared,32,out); rc=0;
+done:
+ memset(shared,0,sizeof shared); memset(P,0,sizeof P);
+ return rc; }
 /* also expose raw compressed shared point (before SHA-256) for debugging */
-int zkn_sw_ed25519_scalarmul(const u8 scalar_le[32], const u8 VK[32], u8 out[32]){ gf P[4],Q[4]; if(unpack(Q,VK)) return -1; scalarmult(P,Q,scalar_le); pack(out,P); return 0; }
+int zkn_sw_ed25519_scalarmul(const u8 scalar_le[32], const u8 VK[32], u8 out[32]){
+ gf P[4],Q[4];
+ if(load_peer(Q,VK)) return -1;
+ scalarmult(P,Q,scalar_le);
+ if(is_identity(P)) return -1;
+ pack(out,P); return 0; }
 
 #endif /* ZKN_HOST_BUILD */

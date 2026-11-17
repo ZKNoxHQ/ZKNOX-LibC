@@ -83,6 +83,26 @@ void zkn_g1_384_mul(zkn_g1_384_t *r,
                     int scalar_len,
                     const zkn_mont_ctx384_t *ctx);
 
+/* ── Validation of untrusted encodings ─────────────────────────────── */
+
+/** 1 iff the 48-byte BE value is < p. */
+int zkn_bls12381_fp_is_canonical(const uint8_t be[48]);
+/** 1 iff the 32-byte BE value is < r (scalar field order). */
+int zkn_bls12381_fr_is_canonical(const uint8_t be[32]);
+/** r as 32 big-endian bytes. */
+const uint8_t *zkn_bls12381_r_be(void);
+/** 1 iff [r]P == O. */
+int zkn_g1_384_in_subgroup(const zkn_g1_384_t *P, const zkn_mont_ctx384_t *ctx);
+/**
+ * Load a G1 point from 96-byte BE affine x||y and validate it: canonical
+ * coordinates, on the curve and (if check_subgroup) in the order-r subgroup.
+ * All-zero bytes encode the point at infinity, accepted only if
+ * allow_identity. Returns 0 on success, -1 if the encoding is rejected.
+ */
+int zkn_g1_384_from_be_checked(zkn_g1_384_t *P, const uint8_t buf[96],
+                               int allow_identity, int check_subgroup,
+                               const zkn_mont_ctx384_t *ctx);
+
 #ifdef __cplusplus
 }
 #endif
