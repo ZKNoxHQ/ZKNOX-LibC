@@ -83,19 +83,14 @@ end: __attribute__((unused))
   return error;
 }
 
-/* BabyJubjub base-field prime p, big-endian (message must be a field element). */
-static const uint8_t EDDSA_BJJ_P_BE[32] = {
-    0x30, 0x64, 0x4e, 0x72, 0xe1, 0x31, 0xa0, 0x29, 0xb8, 0x50, 0x45, 0xb6, 0x81, 0x81, 0x58, 0x5d,
-    0x28, 0x33, 0xe8, 0x48, 0x79, 0xb9, 0x70, 0x91, 0x43, 0xe1, 0xf5, 0x93, 0xf0, 0x00, 0x00, 0x01};
-
-/* 1 iff the 32-byte little-endian value is < p. */
-static int eddsa_msg_is_field_element(const uint8_t *msg_le)
+/* 1 iff the 32-byte little-endian value is < p_be (32-byte big-endian). */
+static int eddsa_msg_is_field_element(const uint8_t *msg_le, const uint8_t *p_be)
 {
   for (int i = 0; i < 32; i++)
   {
     uint8_t m = msg_le[31 - i];
-    if (m < EDDSA_BJJ_P_BE[i]) return 1;
-    if (m > EDDSA_BJJ_P_BE[i]) return 0;
+    if (m < p_be[i]) return 1;
+    if (m > p_be[i]) return 0;
   }
   return 0; /* equal to p */
 }
@@ -117,12 +112,21 @@ int EddsaPoseidon_Sign_final(zkn_edcurve_t *curve, uint8_t *prv, zkn_edpoint_t *
   {
     return ZKN_WRONG_LENGTH;
   }
-  /* The message is a BabyJubjub field element (circomlib signPoseidon takes
-   * F.e(msg)). Values >= p were silently reduced inside Poseidon, so the same
-   * signature was valid for two distinct 32-byte messages (m and m + p). */
-  if (!eddsa_msg_is_field_element(msg))
+  /* The message is an element of the curve's base field, the field Poseidon
+   * runs over below (circomlib signPoseidon takes F.e(msg)). Values >= p were
+   * silently reduced inside Poseidon, so the same signature was valid for two
+   * distinct 32-byte messages (m and m + p). The bound is curve->modulus, not
+   * the BabyJubjub prime: Bandersnatch hashes over the larger BLS12-381 Fr. */
   {
-    return ZKN_ERR_INVALID_PARAM;
+    uint8_t p_be[32];
+    if (curve->fieldsize8 != 32 || zkn_bn_export(curve->modulus, p_be, 32) != ZKN_OK)
+    {
+      return ZKN_ERR_INVALID_PARAM;
+    }
+    if (!eddsa_msg_is_field_element(msg, p_be))
+    {
+      return ZKN_ERR_INVALID_PARAM;
+    }
   }
 
   zkn_bn_t bnbig_n; // order encoded over 64 bytes to allow reduction to be called on r

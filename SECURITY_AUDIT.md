@@ -331,13 +331,21 @@ were fixed on top:
 - **C-4 / H-4:** the canonicality check on the secret nonces and `sk` in
   `zkn_partial_sig` is now a constant-time borrow compare.
 - `spf_verify` checks for a NULL node before hashing it.
+- **M-4 regression on Bandersnatch:** the EdDSA message bound was the
+  BabyJubjub prime for every curve, while Bandersnatch hashes over BLS12-381
+  Fr. Valid Bandersnatch messages in `[p_bjj, p_bls)` (~58% of the field) were
+  refused. The bound is now `curve->modulus`; regression checks cover both
+  curves.
 - Docs: `zkn_frost.h` (nonces consumed, `lambda_i` optional) and
   `zkn_groth16.h` (public inputs must be reduced mod r).
   `tests/verify_sigs.mjs` now expects sigB (msg ≥ p) to be refused; sigA
   still verifies against circomlibjs.
 
-`make WITH_KEYS=1 test` under ASan + UBSan: 24 suites, 68/68 regressions, no
-reports.
+`make WITH_KEYS=1 test` under ASan + UBSan: 24 suites, 71/71 regressions, no
+reports. The ZKNOX-HW-PRIVACY, ZKN-HW-RAILGUN and railgun-reloaded Ledger apps
+build against this branch (Nano S+, `BACKEND=sw|cx`, prod and debug) with no
+warnings; railgun-reloaded's Ragger suite on Speculos gives the same results as
+with its current library pin.
 
 Open, to check on a device (cannot be built here):
 

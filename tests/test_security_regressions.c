@@ -98,14 +98,20 @@ static void test_bignum(void)
 
 /* ═════════════════════════ C-1  EdDSA double-public-key oracle ═════════════════════════ */
 
-static int eddsa_sign(const uint8_t prv[32], const uint8_t pub_from[32], const uint8_t msg[32], uint8_t sig[96])
+static int eddsa_sign_on(uint32_t curve_id, const uint8_t prv[32], const uint8_t pub_from[32],
+                         const uint8_t msg[32], uint8_t sig[96])
 {
   zkn_edcurve_t c; zkn_edpoint_t P; uint8_t k[32], m[32];
-  tEdwards_Curve_alloc_init(&c, _BABYJUJUB_ID);
+  tEdwards_Curve_alloc_init(&c, curve_id);
   tEdwards_alloc(&c, &P);
   memcpy(k, pub_from, 32); zkn_prv2pub(&c, k, &P);
   memcpy(k, prv, 32); memcpy(m, msg, 32);
   return EddsaPoseidon_Sign_final(&c, k, &P, m, 32, sig);
+}
+
+static int eddsa_sign(const uint8_t prv[32], const uint8_t pub_from[32], const uint8_t msg[32], uint8_t sig[96])
+{
+  return eddsa_sign_on(_BABYJUJUB_ID, prv, pub_from, msg, sig);
 }
 
 static void test_eddsa(void)
@@ -118,6 +124,15 @@ static void test_eddsa(void)
   check("sign with a foreign public key is refused (key-recovery oracle)", eddsa_sign(prv, other, msg, sig) != 0);
   uint8_t big[32]; memset(big, 0xff, 32);
   check("sign of a message >= p is refused", eddsa_sign(prv, prv, big, sig) != 0);
+  /* The bound is the signing curve's base field: Bandersnatch hashes over
+   * BLS12-381 Fr (0x73ed...), larger than the BabyJubjub prime (0x3064...). */
+  uint8_t mid[32]; memcpy(mid, msg, 32);
+  mid[31] = 0x50; /* little-endian: 0x30644e.. <= value < 0x73eda7.. */
+  check("BabyJubjub: message in [p_bjj, p_bls) is refused", eddsa_sign(prv, prv, mid, sig) != 0);
+  check("Bandersnatch: message in [p_bjj, p_bls) is signed",
+        eddsa_sign_on(_BANDERSNATCH_ID, prv, prv, mid, sig) == 0);
+  check("Bandersnatch: message >= p_bls is refused",
+        eddsa_sign_on(_BANDERSNATCH_ID, prv, prv, big, sig) != 0);
 }
 
 /* ═════════════════════════ FROST ═════════════════════════ */
