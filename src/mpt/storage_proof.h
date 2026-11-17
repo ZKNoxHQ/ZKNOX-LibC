@@ -119,6 +119,8 @@ static SpfErr spf_verify(
         const uint8_t *nb = proof_nodes[ni];
         uint32_t       nl = proof_lens[ni];
 
+        if (nb == NULL || nl == 0) return SPF_ERR_BAD_NODE;
+
         /* Vérifie le hash du nœud */
         uint8_t h[32];
         spf_keccak256(nb, nl, h);
@@ -126,7 +128,6 @@ static SpfErr spf_verify(
 
         /* Décode le nœud RLP — the node must be exactly one RLP list */
         RlpItem node; uint32_t consumed;
-        if (nb == NULL || nl == 0) return SPF_ERR_BAD_NODE;
         if (rlp_decode(nb, nl, &node, &consumed) != RLP_OK) return SPF_ERR_BAD_NODE;
         if (node.type != RLP_LIST || consumed != nl) return SPF_ERR_BAD_NODE;
 

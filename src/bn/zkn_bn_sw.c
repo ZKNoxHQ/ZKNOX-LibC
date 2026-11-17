@@ -47,6 +47,7 @@ int zkn_bn_alloc_init(zkn_bn_t *x, size_t nbytes,
         memcpy(buf + (ZKN_MONT_BYTES - value_nbytes), value, value_nbytes);
     }
     zkn_fe256_from_be(*x, buf);
+    explicit_bzero(buf, sizeof(buf)); /* value may be secret */
     return ZKN_OK;
 }
 

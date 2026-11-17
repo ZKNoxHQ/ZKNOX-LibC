@@ -84,10 +84,18 @@ static int zkn_frost_is_zero32(const uint8_t *a)
   return acc == 0;
 }
 
-/* 1 iff the scalar (32-byte BE) is canonical, i.e. < the subgroup order. */
+/* 1 iff the scalar (32-byte BE) is canonical, i.e. < the subgroup order.
+ * Constant time: it runs on the secret nonces and key share. The sign of
+ * k - ord is the final borrow of a byte-wise subtraction from the LSB. */
 static int zkn_frost_scalar_ok(const uint8_t *ord_be, const uint8_t *k_be)
 {
-  return zkn_frost_be_lt(k_be, ord_be, 32);
+  uint32_t borrow = 0;
+  for (size_t i = 32; i-- > 0;)
+  {
+    uint32_t d = (uint32_t)k_be[i] - ord_be[i] - borrow;
+    borrow = (d >> 8) & 1;
+  }
+  return (int)borrow;
 }
 
 /* 1 iff the 32-byte little-endian message is a BabyJubjub field element. */

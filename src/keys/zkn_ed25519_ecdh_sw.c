@@ -33,7 +33,7 @@ int zkn_ed25519_scalarmul_compressed(const uint8_t *scalar_be32,
     uint8_t scalar_le[32];
     be32_to_le32(scalar_be32, scalar_le);
     int rc = zkn_sw_ed25519_scalarmul(scalar_le, compressed_in, compressed_out);
-    memset(scalar_le, 0, sizeof(scalar_le));
+    explicit_bzero(scalar_le, sizeof(scalar_le));
     return rc;
 }
 
@@ -45,7 +45,7 @@ int zkn_ed25519_ecdh_kdf(const uint8_t *scalar_be32,
     uint8_t scalar_le[32];
     be32_to_le32(scalar_be32, scalar_le);
     int rc = zkn_sw_ed25519_ecdh_kdf(scalar_le, VK_compressed, aes_key_out);
-    memset(scalar_le, 0, sizeof(scalar_le));
+    explicit_bzero(scalar_le, sizeof(scalar_le));
     return rc;
 }
 

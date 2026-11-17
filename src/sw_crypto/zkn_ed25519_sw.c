@@ -18,7 +18,7 @@ static const gf gf0={0}, gf1={1},
  Y={0x6658,0x6666,0x6666,0x6666,0x6666,0x6666,0x6666,0x6666,0x6666,0x6666,0x6666,0x6666,0x6666,0x6666,0x6666,0x6666},
  I={0xa0b0,0x4a0e,0x1b27,0xc4ee,0xe478,0xad2f,0x1806,0x2f43,0xd7a7,0x3dfb,0x0099,0x2b4d,0xdf0b,0x4fc1,0x2480,0x2b83};
 static void set25519(gf r,const gf a){ for(int i=0;i<16;i++) r[i]=a[i]; }
-static void car25519(gf o){ for(int i=0;i<16;i++){ o[i]+=(1LL<<16); i64 c=o[i]>>16; o[(i+1)*(i<15)]+=c-1+37*(c-1)*(i==15); o[i]-=c<<16; } }
+static void car25519(gf o){ for(int i=0;i<16;i++){ o[i]+=(1LL<<16); i64 c=o[i]>>16; o[(i+1)*(i<15)]+=c-1+37*(c-1)*(i==15); o[i]-=c*65536; /* not c<<16: c may be negative (UB) */  } }
 static void sel25519(gf p,gf q,int b){ i64 c=~(b-1); for(int i=0;i<16;i++){ i64 t=c&(p[i]^q[i]); p[i]^=t; q[i]^=t; } }
 static void pack25519(u8*o,const gf n){ gf m,t; set25519(t,n); car25519(t); car25519(t); car25519(t);
  for(int j=0;j<2;j++){ m[0]=t[0]-0xffed; for(int i=1;i<15;i++){ m[i]=t[i]-0xffff-((m[i-1]>>16)&1); m[i-1]&=0xffff; } m[15]=t[15]-0x7fff-((m[14]>>16)&1); int b=(m[15]>>16)&1; m[14]&=0xffff; sel25519(t,m,1-b); }
@@ -87,7 +87,7 @@ int zkn_sw_ed25519_ecdh_kdf(const u8 scalar_le[32], const u8 VK[32], u8 out[32])
  if(is_identity(P)) goto done;              /* scalar = 0 mod L */
  pack(shared,P); zkn_sw_sha256(shared,32,out); rc=0;
 done:
- memset(shared,0,sizeof shared); memset(P,0,sizeof P);
+ explicit_bzero(shared,sizeof shared); explicit_bzero(P,sizeof P);
  return rc; }
 /* also expose raw compressed shared point (before SHA-256) for debugging */
 int zkn_sw_ed25519_scalarmul(const u8 scalar_le[32], const u8 VK[32], u8 out[32]){

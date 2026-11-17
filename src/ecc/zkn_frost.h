@@ -39,8 +39,8 @@ int zkn_partial_sig(
     size_t identifier,
     uint8_t *secret_key_be,
     uint8_t *groupkey_be, // public key compressed, 64 bits
-    uint8_t *hiding_nonce,
-    uint8_t *binding_nonce,
+    uint8_t *hiding_nonce,  // consumed: wiped on every exit once signing starts
+    uint8_t *binding_nonce, // (unless ZKN_FROST_NO_NONCE_WIPE)
 
     // provided by the APDU
     uint8_t *commitment_list,
@@ -48,7 +48,8 @@ int zkn_partial_sig(
     uint8_t *msg_le,
     size_t msglen, // msgsize
 
-    // lambda_i, to be computed instead
+    // optional (NULL): lambda_i is derived from the identifiers in
+    // commitment_list; if given, it must match
     uint8_t *lambda_i,
     uint8_t *sig);
 

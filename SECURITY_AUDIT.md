@@ -309,3 +309,42 @@ buffer on failure.
   9591 hashes, pairing and final-exponentiation vectors.
 - The proof-of-concepts for C-1, C-2, C-3, H-1 and H-2 succeed on `2b1b212`
   and fail on the patched tree.
+
+## Follow-up: second review of the fixes
+
+The fixes were reviewed again, finding by finding: exhaustive Miller-loop
+infinity masks, independently generated off-subgroup BLS12-381 points,
+`zkn_bn_reduce` against big-int references on ~24k vectors, genuine MPT
+storage proofs, RLP fuzzing under ASan, small-order Ed25519 encodings, and
+non-contiguous FROST quorums with derived λ. All findings hold. The gaps found
+were fixed on top:
+
+- **UBSan in `WITH_KEYS=1` builds** (the original sanitizer run did not cover
+  them): left shift of a negative value in `car25519` (TweetNaCl port) and
+  `uint8_t << 24` overflowing `int` in SW SHA-256. Both predate the review.
+- **M-6:** the Ledger `Poseidon()` path had no `sizeout` bound either.
+- **L-3:** EdDSA signing (SW backend) now also wipes `bn_hi`/`bn_lo` (the
+  BLAKE-512 nonce halves) and `hm` (holds r before S is computed); SW
+  `zkn_bn_alloc_init` wipes its staging buffer. The SW GCM key schedule and
+  SW ECDH scratch were wiped with `memset`, which GCC removes at `-O2` as
+  dead stores; now `explicit_bzero`.
+- **C-4 / H-4:** the canonicality check on the secret nonces and `sk` in
+  `zkn_partial_sig` is now a constant-time borrow compare.
+- `spf_verify` checks for a NULL node before hashing it.
+- Docs: `zkn_frost.h` (nonces consumed, `lambda_i` optional) and
+  `zkn_groth16.h` (public inputs must be reduced mod r).
+  `tests/verify_sigs.mjs` now expects sigB (msg ≥ p) to be refused; sigA
+  still verifies against circomlibjs.
+
+`make WITH_KEYS=1 test` under ASan + UBSan: 24 suites, 68/68 regressions, no
+reports.
+
+Open, to check on a device (cannot be built here):
+
+- FROST signing on `cx_bn`: the λ derivation holds `len` + 4 handles while the
+  curve is allocated. Large quorums (≳ 8) may exceed the previous pool peak.
+- Ed25519 ECDH on `cx_*`: if the firmware blinds the scalar as `k + r·ℓ`
+  rather than randomising coordinates, the `[8]P = O` small-order test is
+  unreliable (the identity input is still rejected).
+- No snarkjs fixtures exist for the hardcoded Groth16 or PLONK verifiers, so
+  valid-proof acceptance is only covered by the generic Groth16 toy VK.

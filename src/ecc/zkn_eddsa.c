@@ -343,6 +343,9 @@ end: __attribute__((unused))
   explicit_bzero(red_r, sizeof(red_r));
   explicit_bzero(bn_s, sizeof(bn_s));
   explicit_bzero(hms, sizeof(hms));
+  explicit_bzero(bn_hi, sizeof(bn_hi)); /* BLAKE-512 nonce hash halves: */
+  explicit_bzero(bn_lo, sizeof(bn_lo)); /* r = hi*2^256 + lo mod l       */
+  explicit_bzero(hm, sizeof(hm));       /* holds r between reload and S */
 #endif
   return error;
 }

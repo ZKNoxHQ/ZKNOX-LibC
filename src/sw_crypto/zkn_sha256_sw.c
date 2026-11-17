@@ -23,7 +23,7 @@ void zkn_sw_sha256(const uint8_t*msg,size_t len,uint8_t out[32]){
   uint64_t bits=(uint64_t)len*8; for(int i=0;i<8;i++) m[total-1-i]=(uint8_t)(bits>>(8*i));
   for(size_t o=0;o<total;o+=64){
     uint32_t w[64];
-    for(int i=0;i<16;i++) w[i]=(m[o+4*i]<<24)|(m[o+4*i+1]<<16)|(m[o+4*i+2]<<8)|m[o+4*i+3];
+    for(int i=0;i<16;i++) w[i]=((uint32_t)m[o+4*i]<<24)|(m[o+4*i+1]<<16)|(m[o+4*i+2]<<8)|m[o+4*i+3];
     for(int i=16;i<64;i++){ uint32_t s0=ROR(w[i-15],7)^ROR(w[i-15],18)^(w[i-15]>>3), s1=ROR(w[i-2],17)^ROR(w[i-2],19)^(w[i-2]>>10); w[i]=w[i-16]+s0+w[i-7]+s1; }
     uint32_t a=h[0],b=h[1],c=h[2],d=h[3],e=h[4],f=h[5],g=h[6],hh=h[7];
     for(int i=0;i<64;i++){ uint32_t S1=ROR(e,6)^ROR(e,11)^ROR(e,25),ch=(e&f)^(~e&g),t1=hh+S1+ch+K[i]+w[i];
