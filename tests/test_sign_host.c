@@ -131,9 +131,11 @@ int main(void)
     t1 = clock();
     printf("[variant B] msg_rev  : rc=%d in %.2f ms\n",
            rcB, (t1 - t0) * 1000.0 / CLOCKS_PER_SEC);
-    chk("sign B rc == 0", rcB == 0);
-
-    chk("sigA != sigB (different messages)", memcmp(sigA, sigB, 96) != 0);
+    /* msg_rev, read little-endian, is 0x8c1f...: larger than the BabyJubjub
+     * prime. It used to be reduced mod p silently, so the signature was also
+     * valid for (m - p). The signer now refuses non-field-element messages. */
+    chk("sign B (message >= p) is rejected", rcB != 0);
+    if (rcB != 0) memset(sigB, 0, sizeof(sigB));
 
     /* ── dump signatures.json ── */
     FILE *f = fopen("signatures.json", "w");

@@ -34,28 +34,66 @@ int zkn_rng_checked(uint8_t *buf, size_t len) {
 }
 
 #else
-/* Default host: /dev/urandom */
+/* Default host: getrandom(2) when available, /dev/urandom otherwise.
+ *
+ * SECURITY: the previous implementation silently filled the buffer with the
+ * predictable pattern 0,1,2,... when /dev/urandom could not be read (e.g. in a
+ * chroot/sandbox or under fd exhaustion). Every consumer of zkn_rng() /
+ * zkn_trng_get_random_data() (projective-coordinate blinding today, any key or
+ * nonce generation tomorrow) would then run with attacker-known "randomness".
+ * The void-returning APIs now FAIL CLOSED: they abort the process rather than
+ * hand out non-random bytes. Callers that can handle an error must use
+ * zkn_rng_checked(). */
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <errno.h>
+#if defined(__linux__)
+#  include <sys/random.h>
+#endif
 
 static int read_urandom(uint8_t *buf, size_t len) {
+    size_t done = 0;
+#if defined(__linux__)
+    while (done < len) {
+        ssize_t r = getrandom(buf + done, len - done, 0);
+        if (r < 0) {
+            if (errno == EINTR) continue;
+            break;                       /* e.g. ENOSYS: fall back below */
+        }
+        done += (size_t)r;
+    }
+    if (done == len) return 0;
+#endif
     FILE *f = fopen("/dev/urandom", "rb");
-    if (!f) return -1;
-    int rc = (fread(buf, 1, len, f) == len) ? 0 : -1;
+    if (!f) goto fail;
+    while (done < len) {
+        size_t r = fread(buf + done, 1, len - done, f);
+        if (r == 0) { fclose(f); goto fail; }
+        done += r;
+    }
     fclose(f);
-    return rc;
+    return 0;
+fail:
+    /* Never leave partial / stale bytes behind for a caller that ignores
+     * the error. */
+    memset(buf, 0, len);
+    return -1;
+}
+
+static void rng_or_abort(uint8_t *buf, size_t len) {
+    if (read_urandom(buf, len) != 0) {
+        fprintf(stderr, "zknox: system RNG unavailable, aborting\n");
+        abort();
+    }
 }
 
 void zkn_rng(uint8_t *buf, size_t len) {
-    if (read_urandom(buf, len) != 0) {
-        for (size_t i = 0; i < len; i++) buf[i] = (uint8_t)i;
-    }
+    rng_or_abort(buf, len);
 }
 
 void zkn_trng_get_random_data(uint8_t *buf, size_t len) {
-    if (read_urandom(buf, len) != 0) {
-        for (size_t i = 0; i < len; i++) buf[i] = (uint8_t)i;
-    }
+    rng_or_abort(buf, len);
 }
 
 int zkn_rng_checked(uint8_t *buf, size_t len) {

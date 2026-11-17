@@ -82,6 +82,10 @@ int tEdwards_double(zkn_edcurve_t *curve, zkn_edpoint_t *self, zkn_edpoint_t *R)
 int tEdwards_add(zkn_edcurve_t *curve, zkn_edpoint_t *Ed_P, zkn_edpoint_t *Ed_Q, zkn_edpoint_t *R);
 int tEdwards_add_affine(zkn_edcurve_t *curve, zkn_edpoint_t *Ed_P, zkn_edpoint_t *Ed_Q, zkn_edpoint_t *R);
 int tEdwards_IsOnCurve(zkn_edcurve_t *curve, zkn_edpoint_t *P, bool *flag);
+// load untrusted BE affine coordinates: rejects non-canonical (>= p) and off-curve points
+int tEdwards_init_checked(zkn_edcurve_t *curve, const uint8_t *i_x, const uint8_t *i_y, zkn_edpoint_t *o_R);
+// neutral element test (any projective representative)
+int tEdwards_IsNeutral(zkn_edcurve_t *curve, zkn_edpoint_t *P, bool *flag);
 
 // randomizing projective representation of the point
 int tEdwards_Coronize(zkn_edcurve_t *curve, zkn_edpoint_t *G);
@@ -110,9 +114,15 @@ int tEdwards_normalize(zkn_edcurve_t *curve, zkn_edpoint_t *i_R);
 #if defined(ZKNOX_DEBUG) || defined(ZKN_FROST)
 int tEdwards_scalarMul_bn(zkn_edcurve_t *curve, zkn_edpoint_t *G, zkn_bn_t *k, zkn_edpoint_t *R);
 int tEdwards_scalarMul(zkn_edcurve_t *curve, zkn_edpoint_t *G, const uint8_t *k, size_t len, zkn_edpoint_t *R);
+// prime-order subgroup membership ([order]P == O), variable time, public points only
+int tEdwards_IsInSubgroup(zkn_edcurve_t *curve, zkn_edpoint_t *P, bool *flag);
 #endif
 
 // msm
+// WARNING: tEdwards_2MSM_precomp_table / tEdwards_fixedBase_2MSM are VARIABLE
+// TIME (leading-zero skip, `if (sel != 0)` branch, direct table indexing).
+// Never pass a secret scalar. Secret scalars on the base point must go through
+// tEdwards_fixedBase_4MSM, which is the constant-time implementation.
 int tEdwards_2MSM_precomp_table(zkn_edcurve_t *curve, const uint8_t (*T_mx)[32], const uint8_t (*T_my)[32], const uint8_t *k1, size_t len1, const uint8_t *k2, size_t len2, zkn_edpoint_t *R);
 int tEdwards_4MSM_precomp_table(zkn_edcurve_t *curve, const uint8_t (*T_mx)[32], const uint8_t (*T_my)[32], const uint8_t *k1, size_t len1, const uint8_t *k2, size_t len2, const uint8_t *k3, size_t len3, const uint8_t *k4, size_t len4, zkn_edpoint_t *R);
 int tEdwards_fixedBase_2MSM(zkn_edcurve_t *curve, const uint8_t *k, zkn_edpoint_t *R);

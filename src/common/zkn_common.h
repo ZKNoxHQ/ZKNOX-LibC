@@ -44,15 +44,21 @@ static inline void rev256(uint64_t data[4])
     data[3] = temp0;
 }
 
+/* Reverse `datalen` bytes in place (big-endian <-> little-endian).
+ *
+ * SECURITY/CORRECTNESS: the previous body swapped data[i] with
+ * data[datalen/2 - i]; for datalen = 32 the second half of the loop undid the
+ * first, so the net effect was a single swap of bytes 0 and 16. Callers
+ * (tEdwards_packPoint) then OR-ed the x sign bit into what was really the
+ * least-significant byte of y, producing a non-injective point encoding. */
 static inline void ByteSwap(uint8_t *data, size_t datalen)
 {
     uint8_t tmp2;
-    // the ByteSwap
     for (size_t i = 0; i < datalen / 2; i++)
     {
         tmp2 = data[i];
-        data[i] = data[datalen / 2 - i];
-        data[datalen / 2 - i] = tmp2;
+        data[i] = data[datalen - 1 - i];
+        data[datalen - 1 - i] = tmp2;
     }
 }
 

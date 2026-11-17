@@ -20,6 +20,9 @@
 #define ZKN_GROTH16_SCALAR_LEN 32
 #define ZKN_GROTH16_PROOF_LEN  (96 + 192 + 96 + ZKN_GROTH16_N_PUBLIC * ZKN_GROTH16_SCALAR_LEN)
 
+/* Proof points must be canonical, on the curve/twist, in the r-subgroup and
+ * not at infinity. Public inputs are big-endian and must already be reduced
+ * mod r: a raw 256-bit hash >= r is rejected (x and x + r would alias). */
 int zkn_groth16_verify(const uint8_t proof_buf[ZKN_GROTH16_PROOF_LEN],
                        const zkn_mont_ctx384_t *ctx);
 

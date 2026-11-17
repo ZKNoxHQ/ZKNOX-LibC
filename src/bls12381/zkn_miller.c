@@ -357,6 +357,34 @@ static void add_n_dbl_n(zkn_fp12_384_t          *f,
     }
 }
 
+/* Run the shared Miller loop over the `cnt` loaded pairs and fold the result
+ * into *f (first batch writes *f, later batches multiply into it). */
+static void miller_flush(zkn_fp12_384_t          *f,
+                         int                     *have_f,
+                         zkn_g2_384_t             T[],
+                         const zkn_fp2_384_t      Qx[],
+                         const zkn_fp2_384_t      Qy[],
+                         const zkn_limb_t        *pPx[],
+                         const zkn_limb_t        *pPy[],
+                         size_t                   cnt,
+                         const zkn_mont_ctx384_t *ctx)
+{
+    zkn_fp12_384_t tmp;
+    zkn_fp12_384_t *ret = *have_f ? &tmp : f;
+
+    start_dbl_n(ret, T, pPx, pPy, cnt, ctx);
+    add_n_dbl_n(ret, T, Qx, Qy, pPx, pPy, cnt,  2, ctx);
+    add_n_dbl_n(ret, T, Qx, Qy, pPx, pPy, cnt,  3, ctx);
+    add_n_dbl_n(ret, T, Qx, Qy, pPx, pPy, cnt,  9, ctx);
+    add_n_dbl_n(ret, T, Qx, Qy, pPx, pPy, cnt, 32, ctx);
+    add_n_dbl_n(ret, T, Qx, Qy, pPx, pPy, cnt, 16, ctx);
+    zkn_fp12_384_conjugate(ret, ret, ctx);
+
+    if (*have_f)
+        zkn_fp12_384_mul(f, f, &tmp, ctx);
+    *have_f = 1;
+}
+
 void zkn_miller_loop_n(zkn_fp12_384_t          *f,
                        const zkn_g1_384_t *const Ps[],
                        const zkn_g2_384_t *const Qs[],
@@ -373,6 +401,20 @@ void zkn_miller_loop_n(zkn_fp12_384_t          *f,
     const zkn_limb_t *pPy[MILLER_N_MAX];
     size_t i, j;
 
+    /* SECURITY: the previous bookkeeping processed a batch only when the
+     * slot buffer filled up or when the CURRENT pair was the last one
+     * (`j == n - 1`). Pairs involving the point at infinity are skipped with
+     * `continue`, so
+     *   - if the LAST pair was trivial, the pending batch was never processed
+     *     and *f was returned without ever being written (uninitialised stack:
+     *     possibly a previous call's accepting value). In the PLONK verifier
+     *     the second pair (A2, G2) is attacker-steerable to A2 = O;
+     *   - "first batch" was decided by `j < MILLER_N_MAX` instead of "nothing
+     *     written to f yet", so after a skipped leading pair the result was
+     *     multiplied INTO the uninitialised *f.
+     * Now: flush whenever the buffer is full, flush the remainder after the
+     * loop, and track explicitly whether f holds a value. */
+    int have_f = 0;
     for (i = 0, j = 0; j < n; j++) {
         const zkn_g1_384_t *P = Ps[j];
         const zkn_g2_384_t *Q = Qs[j];
@@ -389,26 +431,15 @@ void zkn_miller_loop_n(zkn_fp12_384_t          *f,
         zkn_fp2_384_copy(&T[i].Y, &Qy[i]);
         zkn_fp2_384_one(&T[i].Z, ctx);
 
-        if (++i == MILLER_N_MAX || j == n - 1) {
-            zkn_fp12_384_t tmp;
-            int first = (j < MILLER_N_MAX);
-            zkn_fp12_384_t *ret = first ? f : &tmp;
-
-            start_dbl_n(ret, T, pPx, pPy, i, ctx);
-            add_n_dbl_n(ret, T, Qx, Qy, pPx, pPy, i,  2, ctx);
-            add_n_dbl_n(ret, T, Qx, Qy, pPx, pPy, i,  3, ctx);
-            add_n_dbl_n(ret, T, Qx, Qy, pPx, pPy, i,  9, ctx);
-            add_n_dbl_n(ret, T, Qx, Qy, pPx, pPy, i, 32, ctx);
-            add_n_dbl_n(ret, T, Qx, Qy, pPx, pPy, i, 16, ctx);
-            zkn_fp12_384_conjugate(ret, ret, ctx);
-
-            if (!first)
-                zkn_fp12_384_mul(f, f, &tmp, ctx);
+        if (++i == MILLER_N_MAX) {
+            miller_flush(f, &have_f, T, Qx, Qy, pPx, pPy, i, ctx);
             i = 0;
         }
     }
+    if (i > 0)
+        miller_flush(f, &have_f, T, Qx, Qy, pPx, pPy, i, ctx);
 
-    if (i == 0 && j == 0)
-        zkn_fp12_384_one(f, ctx);
+    if (!have_f)
+        zkn_fp12_384_one(f, ctx);   /* empty product */
 #undef MILLER_N_MAX
 }

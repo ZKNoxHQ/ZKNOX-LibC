@@ -20,61 +20,29 @@
  *  out[32] = value[64] mod modulus[32]
  * ══════════════════════════════════════════════════════════════════════ */
 
-#ifdef ZKN_BACKEND_LEDGER
-
-/* ── Ledger: use cx_bn 64-byte support (original code path) ──────── */
-
-#include "zkn_bn.h"
-#include "zkn_hash_compat.h"
-#include "zkn_rng_compat.h"
-
-int zkn_reduce_512_be(uint8_t       out[32],
-                      const uint8_t value[64],
-                      const uint8_t modulus[32])
-{
-    zkn_bn_t r, big_val, big_mod;
-    uint8_t big_n[64];
-    int err = 0;
-
-    /* Build 64-byte modulus: 32 zero bytes || modulus[32] */
-    memset(big_n, 0, 32);
-    memcpy(big_n + 32, modulus, 32);
-
-    if ((err = zkn_bn_alloc_init(&big_val, 64, value, 64)) != 0) return err;
-    if ((err = zkn_bn_alloc_init(&big_mod, 64, big_n, 64)) != 0) return err;
-    if ((err = zkn_bn_alloc(&r, 64)) != 0)                       return err;
-
-    if ((err = zkn_bn_reduce(r, big_val, big_mod)) != 0)         return err;
-    if ((err = zkn_bn_export(r, out, 32)) != 0)                  return err;
-
-    zkn_bn_destroy(&big_mod);
-    zkn_bn_destroy(&big_val);
-    zkn_bn_destroy(&r);
-
-    return 0;
-}
-
-#else
-
+/* Portable implementation used by BOTH backends.
+ *
+ * The file used to carry a cx_bn branch under `#ifdef ZKN_BACKEND_LEDGER`, a
+ * macro that is defined nowhere (the backend switch is ZKN_BN_BACKEND_LEDGER),
+ * so Ledger builds have always compiled the portable path below. The dead
+ * branch was removed rather than enabled: it had never been exercised on
+ * device, leaked bignum handles on every error path, and exported a 64-byte
+ * bignum into a 32-byte buffer. */
 /* ── Software: pure arithmetic using zkn_mont256 ─────────────────── */
 
 #include "zkn_mont256.h"
 
-/* Local 256-bit comparison (avoids dependency on zkn_sw_bn) */
-static int cmp256(const zkn_fe256_t a, const zkn_fe256_t b)
+/* Constant-time reduction of any 256-bit value modulo n:
+ *   from_mont(to_mont(a)) = (a * R^2 * R^-1) * R^-1 = a mod n.
+ * to_mont is valid for every a < 2^256 because R^2 mod n < n, so a * R^2 < R * n
+ * and the CIOS output is < 2n before its final conditional subtraction.
+ * Replaces a `while (a >= n) a -= n` loop whose iteration count depended on
+ * the (potentially secret) input. */
+static void reduce256_ct(zkn_fe256_t r, const zkn_fe256_t a, const zkn_mont_ctx256_t *ctx)
 {
-    for (int i = ZKN_MONT_NLIMBS - 1; i >= 0; i--) {
-        if (a[i] > b[i]) return  1;
-        if (a[i] < b[i]) return -1;
-    }
-    return 0;
-}
-
-/* Local reduce: while a >= n, a -= n */
-static void reduce256(zkn_fe256_t r, const zkn_fe256_t n)
-{
-    while (cmp256(r, n) >= 0)
-        zkn_sub_mod_256(r, r, n, n);
+    zkn_fe256_t m;
+    zkn_mul_mont_256(m, a, ctx->R2, ctx->p, ctx->n0);
+    zkn_from_mont_256(r, m, ctx->p, ctx->n0);
 }
 
 /*
@@ -105,13 +73,9 @@ int zkn_reduce_512_be(uint8_t       out[32],
     /* R_normal = 2^256 mod n = from_mont(R^2) */
     zkn_from_mont_256(R_normal, ctx.R2, ctx.p, ctx.n0);
 
-    /* hi_r = hi mod n */
-    memcpy(hi_r, hi, sizeof(zkn_fe256_t));
-    reduce256(hi_r, n);
-
-    /* lo_r = lo mod n */
-    memcpy(lo_r, lo, sizeof(zkn_fe256_t));
-    reduce256(lo_r, n);
+    /* hi_r = hi mod n, lo_r = lo mod n (constant time) */
+    reduce256_ct(hi_r, hi, &ctx);
+    reduce256_ct(lo_r, lo, &ctx);
 
     /* term = hi_r * R_normal mod n  (via Montgomery round-trip) */
     {
@@ -131,4 +95,3 @@ int zkn_reduce_512_be(uint8_t       out[32],
     return 0;
 }
 
-#endif /* ZKN_BACKEND_LEDGER */

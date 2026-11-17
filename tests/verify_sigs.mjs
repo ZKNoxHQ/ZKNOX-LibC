@@ -54,14 +54,18 @@ function testSig(label, sig) {
 }
 
 const okA = testSig("sigA (host signed msg_asIs)", sigA);
-const okB = testSig("sigB (host signed msg_rev)",  sigB);
+
+/* msg_rev read little-endian is >= p: the signer must refuse it (M-4) and
+ * test_sign_host then writes an all-zero sigB. */
+const isZero = (h) => /^0*$/.test(h);
+const okB = isZero(data.sigB.r8x) && isZero(data.sigB.r8y) && isZero(data.sigB.s);
+console.log(`\n── sigB (msg_rev >= p) ──\n   ${okB ? "✅ refused by the signer" : "❌ was signed"}`);
 
 console.log("\n════════════════════════════════════════════════════════════");
 if (okA && okB) {
-  console.log("  ✅ Both host signatures verify successfully against circomlibjs");
-  console.log("     (with a specific msg encoding convention)");
+  console.log("  ✅ sigA verifies against circomlibjs and sigB (msg >= p) was refused");
   process.exit(0);
 } else {
-  console.log("  ❌ At least one sig failed all verification attempts");
+  console.log("  ❌ sigA failed verification or sigB was not refused");
   process.exit(1);
 }

@@ -55,20 +55,33 @@ static void slot_to_nibbles(const uint8_t slot[32], uint8_t nibs[64])
     }
 }
 
-/* HP path decoder — réutilisation identique à mpt.h */
-static void spf_decode_compact(const uint8_t *enc, uint32_t enc_len,
-                                uint8_t *nibs, uint32_t *n_nibs, int *is_leaf)
+/* HP (hex-prefix) path decoder.
+ *
+ * SECURITY: the caller's buffer is 128 nibbles and the old decoder wrote
+ * 2*(enc_len-1)+1 of them with no bound — any path item longer than 64 bytes
+ * overflowed the stack. A key is 64 nibbles, so a valid HP path is at most
+ * 33 bytes. Also rejects flag nibbles > 3 and a non-zero pad nibble.
+ * Returns 0 on success, -1 on a malformed path. */
+static int spf_decode_compact(const uint8_t *enc, uint32_t enc_len,
+                              uint8_t *nibs, uint32_t nibs_cap,
+                              uint32_t *n_nibs, int *is_leaf)
 {
-    if (enc_len == 0) { *n_nibs = 0; *is_leaf = 0; return; }
+    *n_nibs = 0; *is_leaf = 0;
+    if (enc_len == 0) return -1;               /* HP always has a flag byte */
+    if (enc_len > 1 + SPF_KEY_NIBS / 2) return -1;
     uint8_t hi = (enc[0] >> 4) & 0x0F;
+    if (hi > 3) return -1;
     *is_leaf    = (hi >> 1) & 1;
     int odd     = hi & 1;
-    *n_nibs     = 0;
+    if (!odd && (enc[0] & 0x0F) != 0) return -1;
+    uint32_t need = 2 * (enc_len - 1) + (odd ? 1u : 0u);
+    if (need > nibs_cap) return -1;
     if (odd) nibs[(*n_nibs)++] = enc[0] & 0x0F;
     for (uint32_t i = 1; i < enc_len; i++) {
         nibs[(*n_nibs)++] = (enc[i] >> 4) & 0x0F;
         nibs[(*n_nibs)++] =  enc[i]       & 0x0F;
     }
+    return 0;
 }
 
 /**
@@ -81,7 +94,9 @@ static void spf_decode_compact(const uint8_t *enc, uint32_t enc_len,
  * @param n_nodes        nombre de nœuds
  * @param value_out      32 bytes output : valeur stockée (bytes32, zero-padded)
  */
-SpfErr spf_verify(
+/* static: this is a header; a non-static definition broke the build as soon
+ * as two translation units included it (duplicate symbol). */
+static SpfErr spf_verify(
     const uint8_t  storage_hash[32],
     const uint8_t  slot[32],
     const uint8_t *proof_nodes[],
@@ -89,6 +104,7 @@ SpfErr spf_verify(
     uint32_t       n_nodes,
     uint8_t        value_out[32])
 {
+    if (!storage_hash || !slot || !proof_nodes || !proof_lens || !value_out) return SPF_ERR_PARAM;
     if (n_nodes == 0 || n_nodes > SPF_MAX_NODES) return SPF_ERR_PARAM;
 
     /* Clé = nibbles de keccak256(slot) */
@@ -103,15 +119,17 @@ SpfErr spf_verify(
         const uint8_t *nb = proof_nodes[ni];
         uint32_t       nl = proof_lens[ni];
 
+        if (nb == NULL || nl == 0) return SPF_ERR_BAD_NODE;
+
         /* Vérifie le hash du nœud */
         uint8_t h[32];
         spf_keccak256(nb, nl, h);
         if (memcmp(h, expected, 32) != 0) return SPF_ERR_HASH_MISMATCH;
 
-        /* Décode le nœud RLP */
+        /* Décode le nœud RLP — the node must be exactly one RLP list */
         RlpItem node; uint32_t consumed;
         if (rlp_decode(nb, nl, &node, &consumed) != RLP_OK) return SPF_ERR_BAD_NODE;
-        if (node.type != RLP_LIST) return SPF_ERR_BAD_NODE;
+        if (node.type != RLP_LIST || consumed != nl) return SPF_ERR_BAD_NODE;
 
         uint32_t cnt = rlp_list_count(&node);
 
@@ -138,32 +156,38 @@ SpfErr spf_verify(
             if (rlp_list_item(&node, 1, &val_item)  != RLP_OK) return SPF_ERR_BAD_NODE;
             if (path_item.type != RLP_STR) return SPF_ERR_BAD_NODE;
 
-            uint8_t path_nibs[128]; uint32_t path_n; int is_leaf;
-            spf_decode_compact(path_item.data, path_item.len, path_nibs, &path_n, &is_leaf);
+            uint8_t path_nibs[SPF_KEY_NIBS + 1]; uint32_t path_n; int is_leaf;
+            if (spf_decode_compact(path_item.data, path_item.len, path_nibs,
+                                   sizeof(path_nibs), &path_n, &is_leaf) != 0)
+                return SPF_ERR_BAD_NODE;
 
             if (key_pos + path_n > SPF_KEY_NIBS) return SPF_ERR_PATH_MISMATCH;
             if (memcmp(path_nibs, key + key_pos, path_n) != 0) return SPF_ERR_PATH_MISMATCH;
             key_pos += path_n;
 
             if (is_leaf) {
+                /* A leaf must terminate the FULL key. Without this a leaf
+                 * whose path only covered a prefix of keccak(slot) returned
+                 * its value for our slot. */
+                if (key_pos != SPF_KEY_NIBS) return SPF_ERR_PATH_MISMATCH;
                 /*
                  * Storage trie leaf value is RLP(trimmed_integer).
                  * val_item contains the raw RLP bytes — decode one more level.
                  */
                 if (val_item.type != RLP_STR) return SPF_ERR_VALUE;
 
-                /* Short value (single byte <= 0x7f): val_item IS the value */
-                if (val_item.len <= 32 && (val_item.len == 0 || val_item.data[0] < 0x80)) {
+                /* Single byte <= 0x7f is its own RLP encoding */
+                if (val_item.len == 1 && val_item.data[0] < 0x80) {
                     memset(value_out, 0, 32);
-                    memcpy(value_out + (32 - val_item.len), val_item.data, val_item.len);
+                    value_out[31] = val_item.data[0];
                     return SPF_OK;
                 }
 
-                /* Longer value: val_item is RLP-encoded, decode inner */
+                /* Otherwise val_item is exactly one RLP string of <= 32 bytes */
                 RlpItem inner; uint32_t ic;
                 if (rlp_decode(val_item.data, val_item.len, &inner, &ic) != RLP_OK)
                     return SPF_ERR_VALUE;
-                if (inner.type != RLP_STR || inner.len > 32)
+                if (inner.type != RLP_STR || inner.len > 32 || ic != val_item.len)
                     return SPF_ERR_VALUE;
 
                 memset(value_out, 0, 32);

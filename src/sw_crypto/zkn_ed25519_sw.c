@@ -18,7 +18,7 @@ static const gf gf0={0}, gf1={1},
  Y={0x6658,0x6666,0x6666,0x6666,0x6666,0x6666,0x6666,0x6666,0x6666,0x6666,0x6666,0x6666,0x6666,0x6666,0x6666,0x6666},
  I={0xa0b0,0x4a0e,0x1b27,0xc4ee,0xe478,0xad2f,0x1806,0x2f43,0xd7a7,0x3dfb,0x0099,0x2b4d,0xdf0b,0x4fc1,0x2480,0x2b83};
 static void set25519(gf r,const gf a){ for(int i=0;i<16;i++) r[i]=a[i]; }
-static void car25519(gf o){ for(int i=0;i<16;i++){ o[i]+=(1LL<<16); i64 c=o[i]>>16; o[(i+1)*(i<15)]+=c-1+37*(c-1)*(i==15); o[i]-=c<<16; } }
+static void car25519(gf o){ for(int i=0;i<16;i++){ o[i]+=(1LL<<16); i64 c=o[i]>>16; o[(i+1)*(i<15)]+=c-1+37*(c-1)*(i==15); o[i]-=c*65536; /* not c<<16: c may be negative (UB) */  } }
 static void sel25519(gf p,gf q,int b){ i64 c=~(b-1); for(int i=0;i<16;i++){ i64 t=c&(p[i]^q[i]); p[i]^=t; q[i]^=t; } }
 static void pack25519(u8*o,const gf n){ gf m,t; set25519(t,n); car25519(t); car25519(t); car25519(t);
  for(int j=0;j<2;j++){ m[0]=t[0]-0xffed; for(int i=1;i<15;i++){ m[i]=t[i]-0xffff-((m[i-1]>>16)&1); m[i-1]&=0xffff; } m[15]=t[15]-0x7fff-((m[14]>>16)&1); int b=(m[15]>>16)&1; m[14]&=0xffff; sel25519(t,m,1-b); }
@@ -57,10 +57,44 @@ static int unpack(gf r[4],const u8*p){ gf num,den,chk,t,den2,den4,den6; set25519
 /* SHA-256 (from sha256_sw.c, inlined via extern) */
 void zkn_sw_sha256(const uint8_t*msg,size_t len,uint8_t out[32]);
 
+/* SECURITY: reject input points of small order and an identity result.
+ * The ECDH scalar here is not clamped (it is the 16-byte note `random`), so
+ * nothing clears the cofactor: a host that supplies a low-order "viewing key"
+ * (e.g. the identity, encoded 01 00..00) makes [k]·VK land in a set of at most
+ * 8 points, and the note-encryption key SHA-256(shared) becomes a public
+ * constant. Also rejects non-canonical y (>= p), which unpack25519 accepted. */
+static const u8 ED25519_IDENTITY[32]={1};
+static void cpy4(gf d[4], gf s[4]){ for(int i=0;i<4;i++) set25519(d[i],s[i]); }
+static int is_identity(gf p[4]){ u8 e[32]; pack(e,p); return memcmp(e,ED25519_IDENTITY,32)==0; }
+static int is_small_order(gf q[4]){ gf t[4]; cpy4(t,q); add(t,t); add(t,t); add(t,t); return is_identity(t); }
+static int y_canonical(const u8 *p){
+ /* y = p[0..31] little-endian with the sign bit masked; reject y >= 2^255-19 */
+ static const u8 P25519[32]={0xed,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+                             0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0x7f};
+ for(int i=31;i>=0;i--){ u8 b = (i==31) ? (u8)(p[i]&0x7f) : p[i]; if(b<P25519[i]) return 1; if(b>P25519[i]) return 0; }
+ return 0; }
+static int load_peer(gf Q[4], const u8 VK[32]){
+ if(!y_canonical(VK)) return -1;
+ if(unpack(Q,VK)) return -1;
+ if(is_small_order(Q)) return -1;
+ return 0; }
+
 /* ecdh-kdf: out = SHA-256( compressed( [scalar_le]·unpack(VK) ) ). scalar is 32B little-endian. */
 int zkn_sw_ed25519_ecdh_kdf(const u8 scalar_le[32], const u8 VK[32], u8 out[32]){
- gf P[4],Q[4]; if(unpack(Q,VK)) return -1; scalarmult(P,Q,scalar_le); u8 shared[32]; pack(shared,P); zkn_sw_sha256(shared,32,out); return 0; }
+ gf P[4],Q[4]; u8 shared[32]; int rc=-1;
+ if(load_peer(Q,VK)) return -1;
+ scalarmult(P,Q,scalar_le);
+ if(is_identity(P)) goto done;              /* scalar = 0 mod L */
+ pack(shared,P); zkn_sw_sha256(shared,32,out); rc=0;
+done:
+ explicit_bzero(shared,sizeof shared); explicit_bzero(P,sizeof P);
+ return rc; }
 /* also expose raw compressed shared point (before SHA-256) for debugging */
-int zkn_sw_ed25519_scalarmul(const u8 scalar_le[32], const u8 VK[32], u8 out[32]){ gf P[4],Q[4]; if(unpack(Q,VK)) return -1; scalarmult(P,Q,scalar_le); pack(out,P); return 0; }
+int zkn_sw_ed25519_scalarmul(const u8 scalar_le[32], const u8 VK[32], u8 out[32]){
+ gf P[4],Q[4];
+ if(load_peer(Q,VK)) return -1;
+ scalarmult(P,Q,scalar_le);
+ if(is_identity(P)) return -1;
+ pack(out,P); return 0; }
 
 #endif /* ZKN_HOST_BUILD */

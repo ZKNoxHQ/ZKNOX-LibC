@@ -218,39 +218,35 @@ int zkn_groth16_verify(const uint8_t proof_buf[ZKN_GROTH16_PROOF_LEN],
 {
     const uint8_t *ptr = proof_buf;
 
-    /* ── 1. Deserialise proof inputs ─────────────────────────────── */
+    /* ── 1. Deserialise AND VALIDATE proof inputs ────────────────────
+     *
+     * SECURITY: the proof used to be loaded with from_affine() only. Now
+     * every element must be a canonical encoding of a point of the right
+     * prime-order group (on-curve + [r]P == O), not the point at infinity,
+     * and the public inputs must be canonical scalars: H_tx and H_tx + r
+     * produced the same vk_x, so a proof for one verified for the other.
+     * ──────────────────────────────────────────────────────────────── */
 
     /* π.A ∈ G1 (96 B) */
     zkn_g1_384_t pi_a;
-    zkn_fe384_t ax, ay;
-    zkn_fe384_from_be(ax, ptr);
-    zkn_fe384_from_be(ay, ptr + 48);
-    zkn_g1_384_from_affine(&pi_a, ax, ay, ctx);
+    if (zkn_g1_384_from_be_checked(&pi_a, ptr, 0, 1, ctx) != 0) return 0;
     ptr += 96;
 
     /* π.B ∈ G2 (192 B) */
     zkn_g2_384_t pi_b;
-    {
-        zkn_fp2_384_t bx, by;
-        zkn_fe384_from_be(bx.c0, ptr);
-        zkn_fe384_from_be(bx.c1, ptr + 48);
-        zkn_fe384_from_be(by.c0, ptr + 96);
-        zkn_fe384_from_be(by.c1, ptr + 144);
-        zkn_g2_384_from_affine(&pi_b, &bx, &by, ctx);
-    }
+    if (zkn_g2_384_from_be_checked(&pi_b, ptr, 0, 1, ctx) != 0) return 0;
     ptr += 192;
 
     /* π.C ∈ G1 (96 B) */
     zkn_g1_384_t pi_c;
-    zkn_fe384_t cx, cy;
-    zkn_fe384_from_be(cx, ptr);
-    zkn_fe384_from_be(cy, ptr + 48);
-    zkn_g1_384_from_affine(&pi_c, cx, cy, ctx);
+    if (zkn_g1_384_from_be_checked(&pi_c, ptr, 0, 1, ctx) != 0) return 0;
     ptr += 96;
 
     /* pub[0] = H_tx (32 B), pub[1] = H_str (32 B) */
     const uint8_t *h_tx  = ptr;
     const uint8_t *h_str = ptr + ZKN_GROTH16_SCALAR_LEN;
+    if (!zkn_bls12381_fr_is_canonical(h_tx) || !zkn_bls12381_fr_is_canonical(h_str))
+        return 0;
 
     /* ── 2. Load hardcoded VK ────────────────────────────────────── */
 
@@ -309,29 +305,6 @@ int zkn_groth16_verify(const uint8_t proof_buf[ZKN_GROTH16_PROOF_LEN],
  *  4-pairing batch: e(A, B) · e(−vk_x, γ) · e(−C, δ) · e(−α, β) == 1
  * ══════════════════════════════════════════════════════════════════════ */
 
-static void load_g1_generic(zkn_g1_384_t *P, const uint8_t buf[96],
-                            const zkn_mont_ctx384_t *ctx)
-{
-    int z = 1;
-    for (int i = 0; i < 96 && z; i++) if (buf[i]) z = 0;
-    if (z) { zkn_g1_384_zero(P); return; }
-    zkn_fe384_t x, y;
-    zkn_fe384_from_be(x, buf);
-    zkn_fe384_from_be(y, buf + 48);
-    zkn_g1_384_from_affine(P, x, y, ctx);
-}
-
-static void load_g2_generic(zkn_g2_384_t *Q, const uint8_t buf[192],
-                            const zkn_mont_ctx384_t *ctx)
-{
-    zkn_fp2_384_t x, y;
-    zkn_fe384_from_be(x.c0, buf);
-    zkn_fe384_from_be(x.c1, buf + 48);
-    zkn_fe384_from_be(y.c0, buf + 96);
-    zkn_fe384_from_be(y.c1, buf + 144);
-    zkn_g2_384_from_affine(Q, &x, &y, ctx);
-}
-
 int zkn_groth16_verify_generic(
     const zkn_groth16_vk_generic_t    *vk,
     const zkn_groth16_proof_generic_t *proof,
@@ -339,31 +312,42 @@ int zkn_groth16_verify_generic(
     int                                n_pub,
     const zkn_mont_ctx384_t           *ctx)
 {
+    if (vk == NULL || proof == NULL || (n_pub > 0 && pub == NULL))
+        return 0;
     if (n_pub != vk->n_public || n_pub < 0 || n_pub > ZKN_GROTH16_MAX_PUB)
         return 0;
 
-    /* Load proof points */
+    /* Load proof points — fully validated (canonical, on curve, in the
+     * order-r subgroup, not infinity). An all-zero π.A used to become the
+     * point at infinity and, through the Miller-loop batching bug, made the
+     * pairing product depend on uninitialised memory. */
     zkn_g1_384_t pA, pC;
     zkn_g2_384_t pB;
-    load_g1_generic(&pA, proof->A, ctx);
-    load_g2_generic(&pB, proof->B, ctx);
-    load_g1_generic(&pC, proof->C, ctx);
+    if (zkn_g1_384_from_be_checked(&pA, proof->A, 0, 1, ctx) != 0) return 0;
+    if (zkn_g2_384_from_be_checked(&pB, proof->B, 0, 1, ctx) != 0) return 0;
+    if (zkn_g1_384_from_be_checked(&pC, proof->C, 0, 1, ctx) != 0) return 0;
 
-    /* Load VK points */
+    /* Public inputs must be canonical scalars (< r): x and x + r give the
+     * same vk_x, i.e. one proof would verify for two different statements. */
+    for (int i = 0; i < n_pub; i++)
+        if (!zkn_bls12381_fr_is_canonical(pub[i])) return 0;
+
+    /* Load VK points (trusted, but at least well-formed: canonical and on
+     * the curve; IC entries may be the point at infinity). */
     zkn_g1_384_t vAlpha;
     zkn_g2_384_t vBeta, vGamma, vDelta;
-    load_g1_generic(&vAlpha, vk->alpha, ctx);
-    load_g2_generic(&vBeta,  vk->beta,  ctx);
-    load_g2_generic(&vGamma, vk->gamma, ctx);
-    load_g2_generic(&vDelta, vk->delta, ctx);
+    if (zkn_g1_384_from_be_checked(&vAlpha, vk->alpha, 0, 0, ctx) != 0) return 0;
+    if (zkn_g2_384_from_be_checked(&vBeta,  vk->beta,  0, 0, ctx) != 0) return 0;
+    if (zkn_g2_384_from_be_checked(&vGamma, vk->gamma, 0, 0, ctx) != 0) return 0;
+    if (zkn_g2_384_from_be_checked(&vDelta, vk->delta, 0, 0, ctx) != 0) return 0;
 
     /* Compute vk_x = IC[0] + Σ pub[i]·IC[i+1] */
     zkn_g1_384_t vk_x;
-    load_g1_generic(&vk_x, vk->IC[0], ctx);
+    if (zkn_g1_384_from_be_checked(&vk_x, vk->IC[0], 1, 0, ctx) != 0) return 0;
 
     for (int i = 0; i < n_pub; i++) {
         zkn_g1_384_t ic_i;
-        load_g1_generic(&ic_i, vk->IC[i + 1], ctx);
+        if (zkn_g1_384_from_be_checked(&ic_i, vk->IC[i + 1], 1, 0, ctx) != 0) return 0;
         /* pub[i] is 32-byte BE scalar */
         zkn_g1_384_t tmp;
         zkn_g1_384_mul(&tmp, &ic_i, pub[i], 32, ctx);

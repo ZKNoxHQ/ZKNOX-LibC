@@ -366,3 +366,65 @@ void zkn_g2_384_mul(zkn_g2_384_t *r,
         }
     }
 }
+
+/* ══════════════════════════════════════════════════════════════════════
+ *  Input validation (untrusted encodings)
+ *
+ *  Added by the security review: the verifiers deserialised proof points
+ *  with from_affine() and nothing else, so off-curve points, points outside
+ *  the prime-order subgroup and non-canonical coordinates (x and x + p) were
+ *  all accepted, and public inputs >= r aliased to (input mod r).
+ * ══════════════════════════════════════════════════════════════════════ */
+
+/* p (base field) and r (scalar field / subgroup order), big-endian */
+static const uint8_t BLS12_381_P_BE[48] = {
+    0x1a,0x01,0x11,0xea,0x39,0x7f,0xe6,0x9a,0x4b,0x1b,0xa7,0xb6,0x43,0x4b,0xac,0xd7,
+    0x64,0x77,0x4b,0x84,0xf3,0x85,0x12,0xbf,0x67,0x30,0xd2,0xa0,0xf6,0xb0,0xf6,0x24,
+    0x1e,0xab,0xff,0xfe,0xb1,0x53,0xff,0xff,0xb9,0xfe,0xff,0xff,0xff,0xff,0xaa,0xab};
+static const uint8_t BLS12_381_R_BE_G2[32] = {
+    0x73,0xed,0xa7,0x53,0x29,0x9d,0x7d,0x48,0x33,0x39,0xd8,0x08,0x09,0xa1,0xd8,0x05,
+    0x53,0xbd,0xa4,0x02,0xff,0xfe,0x5b,0xfe,0xff,0xff,0xff,0xff,0x00,0x00,0x00,0x01};
+
+static int be_lt(const uint8_t *a, const uint8_t *b, size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        if (a[i] < b[i]) return 1;
+        if (a[i] > b[i]) return 0;
+    }
+    return 0;
+}
+
+static int all_zero(const uint8_t *a, size_t n)
+{
+    for (size_t i = 0; i < n; i++) if (a[i]) return 0;
+    return 1;
+}
+
+int zkn_g2_384_in_subgroup(const zkn_g2_384_t *Q, const zkn_mont_ctx384_t *ctx)
+{
+    zkn_g2_384_t T;
+    zkn_g2_384_mul(&T, Q, BLS12_381_R_BE_G2, 32, ctx);
+    return zkn_g2_384_is_zero(&T);
+}
+
+int zkn_g2_384_from_be_checked(zkn_g2_384_t *Q, const uint8_t buf[192],
+                               int allow_identity, int check_subgroup,
+                               const zkn_mont_ctx384_t *ctx)
+{
+    if (all_zero(buf, 192)) {
+        if (!allow_identity) return -1;
+        zkn_g2_384_zero(Q);
+        return 0;
+    }
+    for (int k = 0; k < 4; k++)
+        if (!be_lt(buf + 48 * k, BLS12_381_P_BE, 48)) return -1;
+    zkn_fp2_384_t x, y;
+    zkn_fe384_from_be(x.c0, buf);
+    zkn_fe384_from_be(x.c1, buf + 48);
+    zkn_fe384_from_be(y.c0, buf + 96);
+    zkn_fe384_from_be(y.c1, buf + 144);
+    zkn_g2_384_from_affine(Q, &x, &y, ctx);
+    if (!zkn_g2_384_on_curve(Q, ctx)) return -1;
+    if (check_subgroup && !zkn_g2_384_in_subgroup(Q, ctx)) return -1;
+    return 0;
+}

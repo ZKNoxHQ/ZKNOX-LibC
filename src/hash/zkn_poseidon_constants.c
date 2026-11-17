@@ -610,6 +610,11 @@ int Poseidon(poseidon_ctx_t *ctx, uint32_t initState, zkn_bn_t *out, size_t size
   {
     return ZKN_NOT_INITIALIZED;
   }
+  /* out[] is copied from state[0..sizeout-1]: never read past the state. */
+  if (out == NULL || sizeout == 0 || sizeout > ctx->nb_state_cells)
+  {
+    return ZKN_ERR_INVALID_PARAM;
+  }
 
   ZKN_CHECK(zkn_bn_set_u32(ctx->state[0], initState));
 

@@ -115,6 +115,8 @@ static void gcm_core(const uint8_t key[32], const uint8_t *iv, size_t ivlen,
   for(int j=0;j<16;j++) S[j]^=lenblk[j]; ghash_mul(S,H);
   uint8_t EJ0[16]; aes_encrypt_block(rk,J0,EJ0);
   for(int j=0;j<16;j++) tag[j]=S[j]^EJ0[j];
+  /* the expanded key and H are key material */
+  explicit_bzero(rk,sizeof rk); explicit_bzero(H,sizeof H); explicit_bzero(EJ0,sizeof EJ0);
 }
 
 void zkn_sw_aes256_gcm_encrypt(const uint8_t key[32], const uint8_t *iv, size_t ivlen,
