@@ -27,9 +27,25 @@ static void compress_rfc(const uint8_t W[65], uint8_t out32[32])
     out32[31] |= (uint8_t)((W[32] & 1u) << 7);
 }
 
-// RFC 8032 encoding of the neutral element (x = 0, y = 1), and the cofactor.
+// RFC 8032 encoding of the neutral element (x = 0, y = 1).
 static const uint8_t ED25519_IDENTITY_ENC[32] = {1};
-static const uint8_t ED25519_COFACTOR_BE[32]  = {[31] = 8};
+// [8]P is three doublings. A cx_ecfp_scalar_mult by the cofactor cost a full
+// scalar multiplication (~0.2 s on a Nano S Plus) whatever the scalar's
+// length; three point additions cost a few milliseconds. 8 is public.
+static int ed25519_mul_by_cofactor(const uint8_t P[65], uint8_t out[65])
+{
+    uint8_t T[65];
+    memcpy(out, P, 65);
+    for (int i = 0; i < 3; i++) {
+        if (cx_ecfp_add_point_no_throw(CX_CURVE_Ed25519, T, out, out) != CX_OK) {
+            explicit_bzero(T, sizeof(T));
+            return -1;
+        }
+        memcpy(out, T, 65);
+    }
+    explicit_bzero(T, sizeof(T));
+    return 0;
+}
 
 int zkn_ed25519_scalarmul_compressed(const uint8_t *scalar_be32,
                                      const uint8_t *compressed_in,
@@ -56,8 +72,7 @@ int zkn_ed25519_scalarmul_compressed(const uint8_t *scalar_be32,
     // (it is the note `random`), so nothing clears the cofactor: a low-order
     // "viewing key" from the host makes the shared point — and the AES key
     // SHA-256(shared) — one of at most 8 public values.
-    memcpy(P8, P, sizeof(P8));
-    if (cx_ecfp_scalar_mult_no_throw(CX_CURVE_Ed25519, P8, ED25519_COFACTOR_BE, 32) != CX_OK)
+    if (ed25519_mul_by_cofactor(P, P8) != 0)
         goto out;
     compress_rfc(P8, enc);
     if (memcmp(enc, ED25519_IDENTITY_ENC, 32) == 0)
