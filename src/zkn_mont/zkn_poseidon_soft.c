@@ -827,6 +827,39 @@ static const uint8_t POSEIDON7_MIXCOLUMN[64 * 32] = {
  *  Poseidon internal rounds
  * ══════════════════════════════════════════════════════════════════════ */
 
+#ifdef ZKN_LOW_RAM
+/* Matrix-vector multiply:  state' = MixColumn × state, matrix read from the
+ * const table instead of a RAM copy in Montgomery form.
+ *
+ * m is the canonical matrix entry and s·R the Montgomery state cell, so
+ *     mont_mul(m, s·R) = m · s·R · R^-1 = m·s        (canonical)
+ * The row sum is therefore the canonical new cell, and one to_montgomery
+ * per cell (t per round) brings the state back to Montgomery form. Same
+ * values as the standard path, which computes sum_j (m·R)(s·R)R^-1. */
+static int poseidon_mix(poseidon_soft_ctx_t *ctx)
+{
+    const size_t t = ctx->nb_state_cells;
+
+    for (size_t i = 0; i < t; i++) {
+        ZKN_CHECK(zkn_bn_set_u32(ctx->tmp[i], 0));
+        for (size_t j = 0; j < t; j++) {
+            ZKN_CHECK(zkn_bn_init(ctx->temp,
+                                  ctx->mix_src + 32 * (i * t + j), 32));
+            ZKN_CHECK(zkn_mont_mul(ctx->temp, ctx->temp,
+                                   ctx->state[j], ctx->mont));
+            ZKN_CHECK(zkn_bn_mod_add(ctx->tmp[i], ctx->tmp[i],
+                                     ctx->temp, ctx->mont->n));
+        }
+    }
+
+    for (size_t i = 0; i < t; i++) {
+        ZKN_CHECK(zkn_mont_to_montgomery(ctx->state[i], ctx->tmp[i],
+                                         ctx->mont));
+    }
+
+    return ZKN_OK;
+}
+#else
 /* Matrix-vector multiply:  state' = MixColumn × state */
 static int poseidon_mix(poseidon_soft_ctx_t *ctx)
 {
@@ -847,6 +880,7 @@ static int poseidon_mix(poseidon_soft_ctx_t *ctx)
 
     return ZKN_OK;
 }
+#endif /* ZKN_LOW_RAM */
 
 /* Add round constants from Grain LFSR */
 static int poseidon_add_round_c(poseidon_soft_ctx_t *ctx)
@@ -932,6 +966,10 @@ int zkn_poseidon_init(poseidon_soft_ctx_t *ctx,
         zkn_bn_alloc(&ctx->tmp[i], 32);
     }
 
+#ifdef ZKN_LOW_RAM
+    /* The matrix stays in the const table: see poseidon_mix. */
+    ctx->mix_src = mix_src;
+#else
     /* Load and montgomize MixColumn matrix */
     for (size_t i = 0; i < t; i++) {
         for (size_t j = 0; j < t; j++) {
@@ -943,6 +981,7 @@ int zkn_poseidon_init(poseidon_soft_ctx_t *ctx,
                                              ctx->mont));
         }
     }
+#endif
 
     ctx->status = POSEIDON_INITIALIZED;
     return ZKN_OK;
@@ -1003,9 +1042,11 @@ int zkn_poseidon_destroy(poseidon_soft_ctx_t *ctx)
     for (size_t i = 0; i < t; i++) {
         ZKN_CHECK(zkn_bn_destroy(&ctx->state[i]));
         ZKN_CHECK(zkn_bn_destroy(&ctx->tmp[i]));
+#ifndef ZKN_LOW_RAM
         for (size_t j = 0; j < t; j++) {
             ZKN_CHECK(zkn_bn_destroy(&ctx->MixColumn[i * t + j]));
         }
+#endif
     }
     ZKN_CHECK(zkn_bn_destroy(&ctx->temp));
 

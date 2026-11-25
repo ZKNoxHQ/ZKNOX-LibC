@@ -41,7 +41,14 @@ typedef struct {
     zkn_bn_mont_ctx_t *mont;
 
     zkn_bn_t state[POSEIDON_MAX_CELLS];
+#ifdef ZKN_LOW_RAM
+    /* Low-RAM build: the MDS matrix is never copied to RAM. It is read from
+     * the const table (canonical big-endian, 32 bytes per entry), one entry
+     * at a time, in poseidon_mix. Saves 64 bignums (2 KB) of context. */
+    const uint8_t *mix_src;
+#else
     zkn_bn_t MixColumn[POSEIDON_MAX_CELLS * POSEIDON_MAX_CELLS];
+#endif
 
     /* Grain LFSR for round constant generation */
     uint64_t grain_state[2];

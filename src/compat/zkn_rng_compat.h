@@ -19,6 +19,7 @@
 
 #if defined(ZKN_BN_BACKEND_LEDGER) || defined(ZKN_RNG_BOLOS)
 #  include "cx.h"
+#  include "os_random.h" /* cx_get_random_bytes: not reachable through cx.h on the LNS SDK */
 #  define zkn_rng(buf, len)                  cx_rng((buf), (len))
 #  define zkn_trng_get_random_data(buf, len) cx_rng((buf), (len))
 /* Checked variant: cx_get_random_bytes returns cx_err_t; 0 on success. */

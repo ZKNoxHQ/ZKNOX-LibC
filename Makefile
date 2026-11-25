@@ -30,6 +30,7 @@ WITH_MPT   ?= 1
 DEBUG      ?= 0
 ZKNOX_DEBUG ?= 0    # 1 → compile ZKNOX_DEBUG-only code (VSS Feldman helpers, DKG)
 ZKN_FROST   ?= 0    # 1 → compile the threshold layer (frost, vss helpers, vartime scalarMul)
+ZKN_LOW_RAM ?= 0    # 1 → low-RAM variants (2-bit fixed-base window, MDS matrix read from const, phased signing)
 
 # ── Toolchain ─────────────────────────────────────────────────────────
 CC      ?= cc
@@ -60,6 +61,9 @@ ifeq ($(ZKN_FROST),1)
 endif
 ifeq ($(ZKNOX_DEBUG),1)
   CFLAGS += -DZKNOX_DEBUG
+endif
+ifeq ($(ZKN_LOW_RAM),1)
+  CFLAGS += -DZKN_LOW_RAM
 endif
 
 # Position-independent code for the .so build

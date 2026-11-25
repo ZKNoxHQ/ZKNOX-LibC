@@ -977,6 +977,148 @@ cleanup:
   ZKN_ERROR_CLOSE();
 }
 
+#ifdef ZKN_LOW_RAM
+/* ================================================================== */
+/*  Constant-time 2MSM — the low-RAM fixed-base path                   */
+/* ================================================================== */
+
+/**
+ * @brief Constant-time 2MSM over a 4-entry precomputed table.
+ *
+ * Same construction as tEdwards_4MSM_precomp_table, with two 128-bit
+ * scalars instead of four 64-bit ones:
+ *   - all 2^len iterations are run, starting from R = neutral;
+ *   - every iteration doubles and adds, T[0] = neutral absorbing the
+ *     zero windows (unified Edwards addition);
+ *   - the table entry is selected by scanning all entries under a mask;
+ *   - T[1..3] get a fresh projective randomization at setup, and R is
+ *     re-randomized every CORONIZE_PERIOD iterations.
+ *
+ * What changes is the trade: the randomized table held in RAM is
+ * 4 x 96 bytes instead of 16 x 96 (1152 bytes less stack), and the loop
+ * runs 128 double-and-add steps instead of 64.
+ *
+ * T_mx[4][32] / T_my[4][32]: Montgomery-affine coordinates, indexed by
+ * sel = (bit_k1 << 1) | bit_k2 — the layout of tEdwards_2MSM_precomp_table:
+ *   T[0] = O   T[1] = P2   T[2] = P1   T[3] = P1 + P2
+ */
+static int tEdwards_2MSM_precomp_table_ct(zkn_edcurve_t *curve,
+                                          const uint8_t (*T_mx)[32],
+                                          const uint8_t (*T_my)[32],
+                                          const uint8_t *k1, size_t len1,
+                                          const uint8_t *k2, size_t len2,
+                                          zkn_edpoint_t *R)
+{
+  if (len1 > curve->fieldsize8 || len2 > curve->fieldsize8)
+    return ZKN_NOTIMPLEMENTED;
+
+  ZKN_ERROR_INIT();
+
+  zkn_bn_t bnk1, bnk2;
+  bool bit1, bit2;
+
+  ZKN_CHECK(zkn_bn_alloc_init(&bnk1, curve->fieldsize8, k1, len1));
+  ZKN_CHECK(zkn_bn_alloc_init(&bnk2, curve->fieldsize8, k2, len2));
+
+  /* All-zero fast path, as in the 4MSM: never taken by a signing scalar. */
+  int cmp1 = 0, cmp2 = 0;
+  ZKN_CHECK(zkn_bn_cmp_u32(bnk1, 0, &cmp1));
+  ZKN_CHECK(zkn_bn_cmp_u32(bnk2, 0, &cmp2));
+
+  if (cmp1 == 0 && cmp2 == 0)
+  {
+    ZKN_CHECK(tEdwards_SetNeutral(curve, R));
+    goto cleanup;
+  }
+
+  size_t maxlen = len1;
+  if (len2 > maxlen)
+    maxlen = len2;
+
+  int top = (int)(maxlen << 3) - 1;
+
+  /* Randomized table as byte arrays, T[0] = neutral = (0, mont_One, mont_One). */
+  uint8_t CT_x[4][32] = {0};
+  uint8_t CT_y[4][32] = {0};
+  uint8_t CT_z[4][32] = {0};
+
+  ZKN_CHECK(zkn_bn_export(curve->mont_One, CT_y[0], curve->fieldsize8));
+  memcpy(CT_z[0], CT_y[0], curve->fieldsize8);
+
+  zkn_edpoint_t Tsel;
+  ZKN_CHECK(tEdwards_alloc(curve, &Tsel));
+  for (uint8_t i = 1; i < 4; i++)
+  {
+    ZKN_CHECK(zkn_bn_init(Tsel.x, T_mx[i], curve->fieldsize8));
+    ZKN_CHECK(zkn_bn_init(Tsel.y, T_my[i], curve->fieldsize8));
+    ZKN_CHECK(zkn_bn_copy(Tsel.z, curve->mont_One));
+    ZKN_CHECK(tEdwards_Coronize(curve, &Tsel));
+    ZKN_CHECK(zkn_bn_export(Tsel.x, CT_x[i], curve->fieldsize8));
+    ZKN_CHECK(zkn_bn_export(Tsel.y, CT_y[i], curve->fieldsize8));
+    ZKN_CHECK(zkn_bn_export(Tsel.z, CT_z[i], curve->fieldsize8));
+  }
+
+  ZKN_CHECK(tEdwards_SetNeutral(curve, R));
+
+  uint8_t Tsel_x[32], Tsel_y[32], Tsel_z[32];
+
+  /* Same period as the 4MSM: with top = 127 that is 7 re-randomizations
+   * of R per scalar multiplication. */
+  const int CORONIZE_PERIOD = 16;
+
+  for (int pos = top; pos >= 0; pos--)
+  {
+    ZKN_CHECK(zkn_bn_tst_bit(bnk1, (uint32_t)pos, &bit1));
+    ZKN_CHECK(zkn_bn_tst_bit(bnk2, (uint32_t)pos, &bit2));
+
+    uint8_t sel = (uint8_t)((bit1 ? 2u : 0u) | (bit2 ? 1u : 0u));
+
+    /* Oblivious lookup: scan the 4 entries, keep the one with i == sel. */
+    memset(Tsel_x, 0, curve->fieldsize8);
+    memset(Tsel_y, 0, curve->fieldsize8);
+    memset(Tsel_z, 0, curve->fieldsize8);
+    for (uint8_t i = 0; i < 4; i++)
+    {
+      uint8_t neq = (uint8_t)(i ^ sel);
+      neq |= (uint8_t)(neq >> 1);
+      neq &= 1u;
+      uint8_t mask = (uint8_t)(neq - 1u); /* 0xFF iff i == sel */
+
+      for (size_t b = 0; b < curve->fieldsize8; b++)
+      {
+        Tsel_x[b] |= (uint8_t)(CT_x[i][b] & mask);
+        Tsel_y[b] |= (uint8_t)(CT_y[i][b] & mask);
+        Tsel_z[b] |= (uint8_t)(CT_z[i][b] & mask);
+      }
+    }
+    ZKN_CHECK(zkn_bn_init(Tsel.x, Tsel_x, curve->fieldsize8));
+    ZKN_CHECK(zkn_bn_init(Tsel.y, Tsel_y, curve->fieldsize8));
+    ZKN_CHECK(zkn_bn_init(Tsel.z, Tsel_z, curve->fieldsize8));
+
+    ZKN_CHECK(tEdwards_double(curve, R, R));
+    ZKN_CHECK(tEdwards_add(curve, R, &Tsel, R));
+
+    int iter = top - pos;
+    if (iter > 0 && (iter % CORONIZE_PERIOD) == 0)
+    {
+      ZKN_CHECK(tEdwards_Coronize(curve, R));
+    }
+  }
+  ZKN_CHECK(tEdwards_destroy(curve, &Tsel));
+
+  /* The last selected entry tells the low bit of each scalar half. */
+  explicit_bzero(Tsel_x, sizeof(Tsel_x));
+  explicit_bzero(Tsel_y, sizeof(Tsel_y));
+  explicit_bzero(Tsel_z, sizeof(Tsel_z));
+
+cleanup:
+  ZKN_CHECK(zkn_bn_destroy(&bnk1));
+  ZKN_CHECK(zkn_bn_destroy(&bnk2));
+
+  ZKN_ERROR_CLOSE();
+}
+#endif /* ZKN_LOW_RAM */
+
 int tEdwards_fixedBase_2MSM(zkn_edcurve_t *curve, const uint8_t *k, zkn_edpoint_t *R)
 {
 
@@ -1001,10 +1143,30 @@ int tEdwards_fixedBase_2MSM(zkn_edcurve_t *curve, const uint8_t *k, zkn_edpoint_
   return tEdwards_2MSM_precomp_table(curve, T_mx, T_my, k1, 16, k2, 16, R);
 }
 
+/* Constant-time fixed-base scalar multiplication, k = 32 bytes big-endian.
+ * Standard build: four 64-bit windows over the 16-entry table.
+ * ZKN_LOW_RAM: two 128-bit windows over the 4-entry table, same result. */
 int tEdwards_fixedBase_4MSM(zkn_edcurve_t *curve, const uint8_t *k, zkn_edpoint_t *R)
 {
   const uint8_t (*T_mx)[32];
   const uint8_t (*T_my)[32];
+#ifdef ZKN_LOW_RAM
+  if (curve->curveID == _BABYJUJUB_ID)
+  {
+    bbjj_get_2msm_table(&T_mx, &T_my);
+  }
+  else if (curve->curveID == _BANDERSNATCH_ID)
+  {
+    bandersnatch_get_2msm_table(&T_mx, &T_my);
+  }
+  else
+  {
+    return ZKN_NOTIMPLEMENTED;
+  }
+
+  /* k1 = low 128 bits (weights P1 = G), k2 = high 128 bits (P2 = 2^128.G) */
+  return tEdwards_2MSM_precomp_table_ct(curve, T_mx, T_my, k + 16, 16, k, 16, R);
+#else
   if (curve->curveID == _BABYJUJUB_ID)
   {
     bbjj_get_4msm_table(&T_mx, &T_my);
@@ -1024,6 +1186,7 @@ int tEdwards_fixedBase_4MSM(zkn_edcurve_t *curve, const uint8_t *k, zkn_edpoint_
   const uint8_t *k4 = k + 0;
 
   return tEdwards_4MSM_precomp_table(curve, T_mx, T_my, k1, 8, k2, 8, k3, 8, k4, 8, R);
+#endif /* ZKN_LOW_RAM */
 }
 
 // RFC8032 packpoint: y |=(x&1)<<255, LE representation

@@ -12,6 +12,11 @@
 #include "cx.h"
 #include "zkn_aes_gcm.h"
 
+/* The LNS cxng (Nano S, API_LEVEL_LNS) ships no cx_aes_gcm_*. TARGET_NANOS
+ * comes from bolos_target.h, hence the test after os.h. Nothing below is
+ * referenced by a FROST=0 build. */
+#if !defined(TARGET_NANOS)
+
 int zkn_aes256_gcm_encrypt(const uint8_t *key32,
                            const uint8_t *iv16,
                            const uint8_t *plaintext, size_t plaintext_len,
@@ -123,4 +128,5 @@ out:
     return rc;
 }
 
+#endif /* !TARGET_NANOS */
 #endif /* !ZKN_HOST_BUILD */
