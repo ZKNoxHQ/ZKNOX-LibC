@@ -5,7 +5,7 @@
  *   - cx_bn_*  → zkn_bn_*
  *   - cx_mont_* → zkn_mont_*
  *   - Error macros → simple return-on-error
- *   - rev64 → portable bswap64
+ *   - round constants read from flash tables (zkn_poseidon_rc_bn254.h)
  *   - No Ledger SDK dependencies
  *
  * Backend gate: this is the variable-arity (1..7) Poseidon implementation
@@ -41,143 +41,17 @@
 #endif
 
 /* ══════════════════════════════════════════════════════════════════════
- *  Portable bswap64 (replaces Ledger SDK rev64)
- * ══════════════════════════════════════════════════════════════════════ */
-
-static uint64_t bswap64(uint64_t x)
-{
-    x = ((x & 0x00000000FFFFFFFF) << 32) | ((x & 0xFFFFFFFF00000000) >> 32);
-    x = ((x & 0x0000FFFF0000FFFF) << 16) | ((x & 0xFFFF0000FFFF0000) >> 16);
-    x = ((x & 0x00FF00FF00FF00FF) <<  8) | ((x & 0xFF00FF00FF00FF00) >>  8);
-    return x;
-}
-
-/* ══════════════════════════════════════════════════════════════════════
- *  Grain LFSR — round constant generator (from Poseidon paper)
+ *  Round constants — flash tables
  *
- *  Generates field elements < p using the Grain v1 LFSR with
- *  rejection sampling. This is the exact circomlib specification.
+ *  The circomlib round constants come from the Grain LFSR (Poseidon
+ *  paper). They used to be regenerated here on every hash, which cost
+ *  ~1.8 ms per constant on a Nano S Plus (0.25 s for Poseidon-1, 1.07 s
+ *  for Poseidon-7: nearly the whole hash). tools/gen_poseidon_rc.c runs
+ *  the same generator once, on a host, and writes these tables; the
+ *  values equal circomlibjs poseidon_constants.json.
  * ══════════════════════════════════════════════════════════════════════ */
 
-/* LFSR: x^80 + x^62 + x^51 + x^38 + x^23 + x^13 + 1 */
-#define GRAIN_TAPS \
-    ((1ULL << 0) | (1ULL << 13) | (1ULL << 23) | \
-     (1ULL << 38) | (1ULL << 51) | (1ULL << 62))
-
-/* BN254 scalar field: 254 bits, top 64 bits of p (for Grain rejection sampling). */
-#define BJJ_FIELD_SIZE             254
-#define BJJ_GRAIN_TOP64_THRESHOLD  0x30644e72e131a029ULL
-
-static uint64_t grain_lfsr_advance(uint64_t state[2])
-{
-    uint64_t feedback = state[0] & GRAIN_TAPS;
-
-    feedback = (feedback >> 32) ^ feedback;
-    feedback = (feedback >> 16) ^ feedback;
-    feedback = (feedback >>  8) ^ feedback;
-    feedback = (feedback >>  4) ^ feedback;
-    feedback = (feedback >>  2) ^ feedback;
-    feedback = ((feedback >> 1) ^ feedback) & 1;
-
-    state[0] = (state[0] >> 1) ^ ((state[1] & 1) << 63);
-    state[1] = (state[1] >> 1) ^ (feedback << 15);
-
-    return feedback & 1;
-}
-
-static uint64_t next64_graingen(uint64_t state[2], size_t len)
-{
-    uint64_t out = 0;
-    size_t cpt = 0;
-    uint64_t temp;
-
-    while (cpt < len) {
-        temp = grain_lfsr_advance(state);
-        temp = (temp << 1) + grain_lfsr_advance(state);
-
-        if (temp & 0x2) {
-            out = (out << 1) + (temp & 1);
-            cpt++;
-        }
-    }
-    return out;
-}
-
-/* Build the 80-bit Grain LFSR seed from Poseidon instance parameters.
- * Encoding (from the Poseidon paper):
- *   field(2) | sbox(4) | field_size(12) | t(12) | RF(10) | RP(10) | 1s(30)
- * Bits are packed LSB-first into state[0..1].
- */
-static void init_generator(uint64_t state[2],
-                           size_t field_size, size_t t,
-                           size_t nRoundsF, size_t nRoundsP)
-{
-    uint8_t bits[80];
-    int pos = 0;
-
-    /* field = 1 (GF(p)) → "01" */
-    bits[pos++] = 0; bits[pos++] = 1;
-
-    /* sbox = 0 (x^alpha) → "0000" */
-    for (int i = 3; i >= 0; i--) bits[pos++] = 0;
-
-    /* field_size → 12 bits MSB first */
-    for (int i = 11; i >= 0; i--) bits[pos++] = (field_size >> i) & 1;
-
-    /* t → 12 bits MSB first */
-    for (int i = 11; i >= 0; i--) bits[pos++] = (t >> i) & 1;
-
-    /* RF → 10 bits MSB first */
-    for (int i = 9; i >= 0; i--) bits[pos++] = (nRoundsF >> i) & 1;
-
-    /* RP → 10 bits MSB first */
-    for (int i = 9; i >= 0; i--) bits[pos++] = (nRoundsP >> i) & 1;
-
-    /* padding: 30 ones */
-    for (int i = 0; i < 30; i++) bits[pos++] = 1;
-
-    /* Pack into state[0] (bits 0-63) and state[1] (bits 64-79) */
-    state[0] = 0;
-    state[1] = 0;
-    for (int i = 0; i < 64; i++)
-        state[0] |= ((uint64_t)bits[i]) << i;
-    for (int i = 64; i < 80; i++)
-        state[1] |= ((uint64_t)bits[i]) << (i - 64);
-
-    /* 160 warm-up ticks */
-    for (int i = 0; i < 160; i++) {
-        grain_lfsr_advance(state);
-    }
-}
-
-static void gen_integer(uint64_t state[2], uint64_t out[4])
-{
-    int flag = 0;
-
-    while (flag == 0) {
-        out[0] = next64_graingen(state, BJJ_FIELD_SIZE - 192);  /* 62 bits */
-        out[1] = next64_graingen(state, 64);
-        out[2] = next64_graingen(state, 64);
-        out[3] = next64_graingen(state, 64);
-
-        if (out[0] > BJJ_GRAIN_TOP64_THRESHOLD) {
-            flag = 0;
-        } else {
-            flag = 1;
-        }
-    }
-
-    /* Byte-swap for little-endian ARM representation */
-    out[0] = bswap64(out[0]);
-    out[1] = bswap64(out[1]);
-    out[2] = bswap64(out[2]);
-    out[3] = bswap64(out[3]);
-}
-
-static void poseidon_getNext_RC(poseidon_soft_ctx_t *ctx, uint64_t out[4])
-{
-    gen_integer(ctx->grain_state, out);
-}
+#include "zkn_poseidon_rc_bn254.h"
 
 /* ══════════════════════════════════════════════════════════════════════
  *  MixColumn matrices — hardcoded from circomlib (BN254 scalar field)
@@ -848,15 +722,16 @@ static int poseidon_mix(poseidon_soft_ctx_t *ctx)
     return ZKN_OK;
 }
 
-/* Add round constants from Grain LFSR */
+/* Add the next t round constants from the flash table */
 static int poseidon_add_round_c(poseidon_soft_ctx_t *ctx)
 {
-    uint64_t rc[4];
     zkn_bn_t *rc_bn = ctx->tmp;   /* reuse scratch space */
 
     for (size_t i = 0; i < ctx->nb_state_cells; i++) {
-        poseidon_getNext_RC(ctx, rc);
-        ZKN_CHECK(zkn_bn_init(*rc_bn, (uint8_t *)rc, 32));
+        if (ctx->rc_next >= ctx->rc_end)
+            return ZKN_INVALID_PARAM;
+        ZKN_CHECK(zkn_bn_init(*rc_bn, ZKN_POSEIDON_RC_BN254 + 32u * ctx->rc_next, 32));
+        ctx->rc_next++;
         ZKN_CHECK(zkn_mont_to_montgomery(*rc_bn, *rc_bn, ctx->mont));
         ZKN_CHECK(zkn_bn_mod_add(ctx->state[i], *rc_bn,
                                  ctx->state[i], ctx->mont->n));
@@ -909,8 +784,10 @@ int zkn_poseidon_init(poseidon_soft_ctx_t *ctx,
     ctx->rounds_p = POSEIDON_NROUNDS_P_TABLE[t - 2];
     ctx->mont = montctx;
 
-    init_generator(ctx->grain_state, BJJ_FIELD_SIZE, t,
-                   ctx->rounds_f, ctx->rounds_p);
+    /* This arity's window of the round-constant table. */
+    ctx->rc_first = ZKN_POSEIDON_RC_OFFSET[t - 2];
+    ctx->rc_end = ctx->rc_first + t * (ctx->rounds_f + ctx->rounds_p);
+    ctx->rc_next = ctx->rc_first;
 
     /* Select the MDS matrix for this arity */
     const uint8_t *mix_src;
@@ -958,6 +835,9 @@ int zkn_poseidon(poseidon_soft_ctx_t *ctx,
     /* out[] is copied from state[0..sizeout-1]: never read past the state. */
     if (out == NULL || sizeout == 0 || sizeout > ctx->nb_state_cells)
         return ZKN_INVALID_PARAM;
+
+    /* Every permutation consumes this arity's constants from the first. */
+    ctx->rc_next = ctx->rc_first;
 
     ZKN_CHECK(zkn_bn_set_u32(ctx->state[0], initState));
 

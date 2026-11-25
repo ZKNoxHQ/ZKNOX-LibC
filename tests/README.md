@@ -28,6 +28,7 @@ against `build/libzknox.a` via `make test`.
 | Test                | Tests | Origin | Notes |
 | ------------------- | ----- | ------ | ----- |
 | `test_poseidon_soft`|   27  | sources.zip, unchanged | API unchanged between branches |
+| `test_poseidon_arities`| 14 | known answers from poseidon-lite | Poseidon-1 .. Poseidon-7 through `zkn_poseidon_hash`: each arity reads its own window of the round-constant table |
 | `test_poseidon`     |   11  | rewritten for zknox_1905 | New `Poseidon_alloc_init/Poseidon` API |
 | `test_rfc9591frost` |   23  | written from scratch   | Tests `Babyfrost_H1/H3/H4/H5/H6` (domain separation, determinism) |
 | `test_vss`          |   20  | written from scratch   | Tests `makeDealerCoeffsDeterministic`; full VSS pending (only 1 of 7 functions implemented in `zkn_vss.c`) |

@@ -43,8 +43,10 @@ typedef struct {
     zkn_bn_t state[POSEIDON_MAX_CELLS];
     zkn_bn_t MixColumn[POSEIDON_MAX_CELLS * POSEIDON_MAX_CELLS];
 
-    /* Grain LFSR for round constant generation */
-    uint64_t grain_state[2];
+    /* Round constants: indices into ZKN_POSEIDON_RC_BN254 (flash) */
+    size_t rc_first;   /* this arity's first constant */
+    size_t rc_end;     /* one past its last */
+    size_t rc_next;    /* next to add */
 
     /* scratch space */
     zkn_bn_t temp;
