@@ -3,6 +3,7 @@
 
     python3 tools/mont256_armv6m_check.py                 # the assembly
     python3 tools/mont256_armv6m_check.py --elf app.elf    # and the one of an app ELF
+    python3 tools/mont256_armv6m_check.py -D ZKN_MONT256_NO_FIELD_PATHS
 
 The assembly of src/zkn_mont/zkn_mont256_armv6m.S is run in a Cortex-M0+
 emulator against a Python transcription of the C algorithm of zkn_mont256.c:
@@ -13,10 +14,15 @@ linked in a device ELF runs on the same inputs: the assembly as it sits in the
 image, or the C version if the image was built with -DZKN_MONT256_NO_ASM or
 before the assembly existed.
 
+The assembly has a path for the two curve fields and one for any modulus.
+The moduli below go through both, and through the way back from the first to
+the second: moduli that share n0, or all limbs but one, with a field.
+
 It also counts cycles with the Cortex-M0+ timings (1 per instruction, 2 for a
 load, a store or a taken branch, 1 + n for push/pop of n registers, 3 for
 bl/pop pc), for the two multipliers the core can be built with: MULS in 1
-cycle, or in 32.
+cycle, or in 32. For the assembly, a modulus whose products do not all take
+the same number of cycles is an error.
 
 Needs clang (or arm-none-eabi-gcc), arm-none-eabi-ld/objcopy/nm, and the
 Python packages unicorn and capstone.
@@ -47,6 +53,14 @@ MODULI = {
     "2^256 - 189": (1 << 256) - 189,
     "2^255 - 19": (1 << 255) - 19,
     "small odd modulus": 0x10001,
+    # Not the fields, and close to them: these must take the path of any modulus.
+    "n0 of BN254 r, other limbs": (0x30644E72E131A029B85045B68181585D2833E84879B9709143E1F593F0000001
+                                   ^ (1 << 40)),
+    "BN254 r but its top limb": (0x30644E72E131A029B85045B68181585D2833E84879B9709143E1F593F0000001
+                                 ^ (1 << 250)),
+    "n0 of BLS12-381 r, other limbs": (1 << 255) + (0x1234567 << 32) + 1,
+    "BLS12-381 r but its top limb": (0x73EDA753299D7D483339D80809A1D80553BDA402FFFE5BFEFFFFFFFF00000001
+                                     ^ (1 << 225)),
 }
 
 
@@ -181,6 +195,17 @@ def run(cmd):
     return subprocess.run(cmd, check=True, capture_output=True, text=True).stdout
 
 
+def halves(rng):
+    """A 256-bit value whose 16-bit halves sit on the cases of a comparison."""
+    pick = lambda: rng.choice((0, 1, 0x7FFF, 0x8000, 0xFFFE, 0xFFFF, rng.getrandbits(16)))
+    x = 0
+    for i in range(N):
+        lo = pick()
+        hi = rng.choice((lo, pick(), pick()))                  # equal halves one time in three
+        x |= ((hi << 16) | lo) << (32 * i)
+    return x
+
+
 def assemble(path, defines=()):
     tmp = tempfile.mkdtemp(prefix="mont256-")
     obj, elf, binf = (os.path.join(tmp, n) for n in ("m.o", "m.elf", "m.bin"))
@@ -228,6 +253,8 @@ def cases(p, rng, count):
         yield rng.getrandbits(256), rng.getrandbits(256)           # anything
     for a in edge + [rng.randrange(p) for _ in range(count // 4)]:
         yield a, a                                                 # squarings
+    for _ in range(count // 2):
+        yield halves(rng), halves(rng)                             # halves equal, ordered both ways
 
 
 def main():
@@ -236,16 +263,19 @@ def main():
     ap.add_argument("--elf", help="device ELF whose zkn_mul_mont_256 runs on the same inputs")
     ap.add_argument("--count", type=int, default=400, help="random products per modulus")
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("-D", dest="defines", action="append", default=[], metavar="NAME",
+                    help="define NAME when assembling, e.g. ZKN_MONT256_NO_FIELD_PATHS")
     args = ap.parse_args()
 
-    asm, size = assemble(args.asm)
+    asm, size = assemble(args.asm, args.defines)
     c = from_elf(args.elf) if args.elf else None
     rng = random.Random(args.seed)
     total = bad = 0
-    stats = {"asm": [0, 0, 0, 0], "elf": [0, 0, 0, 0]}        # cycles, muls, runs, stack
+    table = []
     for name, p in MODULI.items():
         n0 = n0_of(p)
         fails = 0
+        stats = {"asm": [0, 0, 0, 0, set()], "elf": [0, 0, 0, 0, set()]}   # cycles, muls, runs, stack, distinct counts
         for k, (a, b) in enumerate(cases(p, rng, args.count)):
             want = reference(a, b, p, n0)
             alias = (None, "a", "b")[k % 3]
@@ -255,11 +285,13 @@ def main():
             ok = got == want and intact
             s = stats["asm"]
             s[0] += asm.cycles; s[1] += asm.muls; s[2] += 1; s[3] = max(s[3], stack)
+            s[4].add((asm.cycles, asm.muls))
             if c:
                 got_c, intact_c, stack_c = c.mul(a, b, p, n0, alias)
                 ok = ok and got_c == want and intact_c
                 s = stats["elf"]
                 s[0] += c.cycles; s[1] += c.muls; s[2] += 1; s[3] = max(s[3], stack_c)
+                s[4].add((c.cycles, c.muls))
             # a reduced product is the Montgomery product
             if a < p and b < p and p > 1 and want != (a * b * pow(1 << 256, -1, p)) % p:
                 ok = False
@@ -268,14 +300,22 @@ def main():
                 fails += 1
                 if fails <= 3:
                     print(f"  MISMATCH {name}: a={a:064x} b={b:064x} alias={alias}")
+        varies = len(stats["asm"][4]) != 1
+        if varies:
+            fails += 1
+            print(f"  NOT CONSTANT {name}: {len(stats['asm'][4])} distinct cycle counts")
         bad += fails
         print(f"{'ok  ' if not fails else 'FAIL'} {name}")
-    print(f"\n{total} products, {bad} mismatches; assembly: {size} bytes of code")
-    for label in ("asm", "elf"):
-        cyc, muls, runs, stack = stats[label]
-        if runs:
-            c1, m = cyc / runs, muls / runs
-            print(f"{label:4s} MULS {m:6.0f}   cycles {c1:7.0f} (1-cycle multiplier)  {c1 + 31 * m:7.0f} (32-cycle)   stack {stack} B")
+        table.append((name, stats))
+    print(f"\n{total} products, {bad} failures; assembly: {size} bytes of code")
+    print(f"\n{'':4s} {'modulus':34s} {'MULS':>5s} {'cycles, MULS in 1':>18s} {'in 32':>7s} {'stack':>6s}")
+    for name, stats in table:
+        for label in ("asm", "elf"):
+            cyc, muls, runs, stack, distinct = stats[label]
+            if runs:
+                c1, m = cyc / runs, muls / runs
+                same = "" if len(distinct) == 1 else "  varies"
+                print(f"{label:4s} {name:34s} {m:5.0f} {c1:18.0f} {c1 + 31 * m:7.0f} {stack:5d}B{same}")
     return 1 if bad else 0
 
 

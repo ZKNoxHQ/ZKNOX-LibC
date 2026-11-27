@@ -73,7 +73,16 @@ int zkn_prv2pub(zkn_edcurve_t *curve, uint8_t *prv, zkn_edpoint_t *Pub)
   // 3.  Interpret the buffer as the little-endian integer, forming asecret scalar s.  Perform a fixed-base scalar multiplication [s]B.
   shr3(out);
 
+#if defined(ZKN_FIXEDBASE_SCALAR_BLINDING)
+#if !defined(ZKN_HAVE_FIXEDBASE_BLIND)
+#error "ZKN_FIXEDBASE_SCALAR_BLINDING needs ZKN_FIXEDBASE_FLASH_TABLE and the software bignums"
+#endif
+  /* The private scalar is the same at every call: it is blinded with a
+   * multiple of the subgroup order, fresh each time. */
+  ZKN_CHECK(tEdwards_fixedBase_4MSM_blind(curve, out, Pub));
+#else
   ZKN_CHECK(tEdwards_fixedBase_4MSM(curve, out, Pub));
+#endif
   // ZKN_CHECK(tEdwards_scalarMul(curve, &curve->G, out, curve->fieldsize8, Pub));
   ZKN_CHECK(tEdwards_normalize(curve, Pub)); // montgomery and normalized
 

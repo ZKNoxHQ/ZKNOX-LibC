@@ -73,6 +73,13 @@ ifeq ($(ZKN_FIXEDBASE_FLASH_TABLE),1)
   CFLAGS += -DZKN_FIXEDBASE_FLASH_TABLE
 endif
 
+# zkn_prv2pub blinds the private scalar with a random multiple of the subgroup
+# order (tEdwards_fixedBase_4MSM_blind). Needs ZKN_FIXEDBASE_FLASH_TABLE=1.
+ZKN_FIXEDBASE_SCALAR_BLINDING ?= 0
+ifeq ($(ZKN_FIXEDBASE_SCALAR_BLINDING),1)
+  CFLAGS += -DZKN_FIXEDBASE_SCALAR_BLINDING
+endif
+
 # Position-independent code for the .so build
 LIBFLAGS := -fPIC
 

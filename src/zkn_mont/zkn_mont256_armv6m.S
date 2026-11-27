@@ -17,12 +17,36 @@
  * These cores have no 32x32->64 multiply: MULS returns the low 32 bits. The
  * compiler answers a 64-bit product with a call to __aeabi_lmul: six MULS, a
  * lot of register traffic, and in the libgcc version a branch on a carry of
- * the operands. Here each product is four 16x16 MULS, inline.
+ * the operands. Here each product is inline.
  *
- * No branch and no memory address depends on the data. MULS takes a fixed
- * number of cycles on these cores (1 or 32 depending on the multiplier the
- * chip was built with). tools/mont256_armv6m_check.py counts the same number
- * of cycles for every input.
+ * Two paths, chosen on the modulus, which is public:
+ *
+ *   - any modulus: every 32x32 product is four 16x16 MULS. 520 MULS.
+ *   - BN254 r and BLS12-381 r, the base fields of BabyJubjub and
+ *     Bandersnatch, where nearly all the products of a signature are:
+ *     a * b[i] takes three MULS per 32x32 product (Karatsuba on the 16-bit
+ *     halves, the middle term from |xl - xh| * |yh - yl| and a sign), and
+ *     the reduction takes none: m * p[j] is a fixed sequence of shifts,
+ *     additions and subtractions, generated from p by
+ *     tools/gen_mont256_armv6m.py into zkn_mont256_armv6m_fields.inc.
+ *     192 MULS.
+ *
+ * The second path pays on a core whose MULS takes 32 cycles, which is what
+ * the Nano S has. With a single-cycle multiplier it is slower than the
+ * first: define ZKN_MONT256_NO_FIELD_PATHS to leave it out.
+ *
+ * The field path is not used for the other moduli, the subgroup orders among
+ * them: the sign of its middle term is one more value that depends on the
+ * operands, a word of zeros or of ones, and the scalars reduced modulo an
+ * order are not randomized the way the coordinates of a point are.
+ * ZKN_MONT256_FIELD_NO_KARATSUBA keeps the field path without that sign:
+ * four MULS per product in a * b[i], 256 MULS in all, the reduction
+ * unchanged.
+ *
+ * No branch and no memory address depends on the operands. MULS takes a
+ * fixed number of cycles on these cores (1 or 32 depending on the multiplier
+ * the chip was built with). tools/mont256_armv6m_check.py checks that each
+ * modulus takes the same number of cycles for every input.
  *
  * Enabled by itself when the file is built for an ARMv6-M target. Define
  * ZKN_MONT256_NO_ASM to keep the C version. On every other target this file
@@ -35,17 +59,23 @@
     .cpu    cortex-m0plus
     .thumb
 
+#if !defined(ZKN_MONT256_NO_FIELD_PATHS)
+#include "zkn_mont256_armv6m_fields.inc"
+#endif
+
 /* Stack frame, from sp:
  *    0 .. 35   t[0..8], the accumulator
  *   36         carry out of the multiplication row
  *   40         r
  *   44         end of b (b + 32)
+ *   48         b cursor of the field path
  * then the saved r8-r11 (16 bytes) and r4-r7, lr (20 bytes); the fifth
  * argument n0 sits above them. */
 #define T_OVF     36
 #define F_R       40
 #define F_BEND    44
-#define FRAME     48
+#define F_BCUR    48
+#define FRAME     52
 #define ARG_N0    (FRAME + 36)
 
 /* Registers of the inner step:
@@ -55,7 +85,9 @@
  *   r3, r4  high word and incoming carry, swapping roles at each step
  *   r5, r6, r7  scratch
  *   r8, r9  low and high half of the multiplier word (b[i], then m)
- *   r10 b cursor, r11 a, r12 p, lr n0
+ *   r10 b cursor, r11 a, r12 p
+ * lr is free: the return address is on the stack, and BL serves as the long
+ * jump between the two paths.
  */
 
 /* (hi : t[tout/4]) = x[xoff/4] * y + t[tin/4] + cin
@@ -90,6 +122,59 @@
     .endif
 .endm
 
+#if !defined(ZKN_MONT256_NO_FIELD_PATHS)
+/* Field path, registers of a multiplication row:
+ *   r1  a
+ *   r3, r4  high word and incoming carry, swapping roles at each step
+ *   r0, r2, r5, r6, r7  scratch; r2 is 0 from the middle of a step
+ *   r8, r9  yl, yh: the halves of b[i]
+ *   r10 |yh - yl|, lr its sign (0 or all ones)
+ *   r11 a, r12 p
+ * t is addressed from sp.
+ *
+ * (hi : t[off/4]) = a[off/4] * b[i] + t[off/4] + cin, with three MULS:
+ *   x * y = xl*yl + 2^16 * mid + 2^32 * xh*yh
+ *   mid   = xl*yh + xh*yl = xl*yl + xh*yh + (xl - xh) * (yh - yl)
+ * The last product is |xl - xh| * |yh - yl| with the sign applied as a
+ * mask; mid is below 2^33. */
+.macro KMULADD off, hi, cin
+    ldr     \hi, [r1, #\off]
+    uxth    r5, \hi                 @ xl
+    lsrs    \hi, \hi, #16           @ xh
+    subs    r6, r5, \hi             @ xl - xh
+    sbcs    r7, r7                  @ all ones if it borrowed
+    eors    r6, r7
+    subs    r6, r6, r7              @ |xl - xh|
+    mov     r2, lr
+    eors    r7, r2                  @ sign of (xl - xh) * (yh - yl)
+    mov     r2, r10
+    muls    r6, r2, r6              @ d = |xl - xh| * |yh - yl|
+    mov     r2, r8
+    muls    r5, r2, r5              @ xl*yl
+    mov     r2, r9
+    muls    \hi, r2, \hi            @ xh*yh
+    eors    r6, r7                  @ d or ~d
+    adds    r2, r7, r7              @ carry = sign: ~d + 1 = -d
+    adcs    r6, r5                  @ xl*yl +- d, low word
+    movs    r2, #0                  @ leaves the carry alone
+    adcs    r7, r2                  @ its high word: sign + carry
+    adds    r6, r6, \hi
+    adcs    r7, r2                  @ (r7 : r6) = mid, r7 is 0 or 1
+    lsls    r0, r6, #16
+    lsrs    r6, r6, #16
+    lsls    r7, r7, #16
+    adds    r6, r6, r7              @ mid >> 16
+    adds    r5, r5, r0
+    adcs    \hi, r6                 @ (hi : r5) = x * y
+    ldr     r6, [sp, #\off]
+    adds    r5, r5, r6
+    adcs    \hi, r2
+    adds    r5, r5, \cin
+    adcs    \hi, r2
+    str     r5, [sp, #\off]
+.endm
+#endif
+
     .section .text.zkn_mul_mont_256, "ax", %progbits
     .global zkn_mul_mont_256
     .type   zkn_mul_mont_256, %function
@@ -108,10 +193,9 @@ zkn_mul_mont_256:
     mov     r11, r1                 @ a
     mov     r10, r2                 @ b cursor
     mov     r12, r3                 @ p
+    str     r2, [sp, #F_BCUR]
     adds    r2, #32
     str     r2, [sp, #F_BEND]
-    ldr     r0, [sp, #ARG_N0]
-    mov     lr, r0                  @ n0
 
     mov     r2, sp                  @ t
     movs    r0, #0
@@ -124,6 +208,23 @@ zkn_mul_mont_256:
     str     r0, [r2, #24]
     str     r0, [r2, #28]
     str     r0, [r2, #32]
+
+#if !defined(ZKN_MONT256_NO_FIELD_PATHS)
+    /* n0 tells the two fields from most moduli; .Lfield_* then compare the
+     * limbs of p and come back to .Lrow for another modulus. */
+    ldr     r5, [r2, #ARG_N0]
+    adds    r6, r5, #1              @ N0_BLS12381R is 0xffffffff
+    beq     .Lto_bls
+    ldr     r6, .Ln0_bn
+    cmp     r5, r6
+    bne     .Lrow
+    bl      .Lfield_bn              @ long jumps, nothing returns here
+.Lto_bls:
+    bl      .Lfield_bls
+    .balign 4
+.Ln0_bn:
+    .word   N0_BN254R
+#endif
 
 .Lrow:
     /* ── t += a * b[i] ── */
@@ -153,7 +254,7 @@ zkn_mul_mont_256:
 
     /* ── m = t[0] * n0; t = (t + m * p) >> 32 ── */
     ldr     r0, [r2, #0]
-    mov     r5, lr
+    ldr     r5, [r2, #ARG_N0]
     muls    r0, r5, r0
     uxth    r5, r0
     lsrs    r0, r0, #16
@@ -272,6 +373,92 @@ zkn_mul_mont_256:
     mov     r10, r6
     mov     r11, r7
     pop     {r4, r5, r6, r7, pc}
+
+#if !defined(ZKN_MONT256_NO_FIELD_PATHS)
+    /* ══ Field path ══ */
+.Lfield_bn:
+    CHECK_P_BN254R .Lother
+    b       .Lfield_next
+.Lfield_bls:
+    CHECK_P_BLS12381R .Lother
+    b       .Lfield_next
+.Lother:
+    bl      .Lrow                   @ same n0, another modulus
+    .ltorg
+
+    /* ── t = (t + m * p) >> 32 ── */
+.Lred_bls:
+    MONT_M_BLS12381R
+    REDROW_BLS12381R
+.Lred_tail:
+    ldr     r0, [sp, #32]           @ t[7] = t[8] + carry; r2 is 0
+    adds    r0, r0, r3
+    str     r0, [sp, #28]
+    adcs    r2, r2
+    ldr     r6, [sp, #T_OVF]
+    adds    r2, r2, r6
+    str     r2, [sp, #32]           @ t[8] = carry out + carry of the first row
+.Lfield_next:
+    ldr     r0, [sp, #F_BCUR]
+    ldr     r6, [sp, #F_BEND]
+    cmp     r0, r6
+    bne     .Lfield_row
+    mov     r2, sp
+    bl      .Lreduce                @ the final subtraction is the common one
+
+    /* ── t += a * b[i] ── */
+.Lfield_row:
+    ldr     r6, [r0]
+    adds    r0, #4
+    str     r0, [sp, #F_BCUR]
+    uxth    r5, r6
+    lsrs    r6, r6, #16
+    mov     r8, r5                  @ yl
+    mov     r9, r6                  @ yh
+    mov     r1, r11
+    movs    r3, #0
+#if defined(ZKN_MONT256_FIELD_NO_KARATSUBA)
+    mov     r2, sp                  @ the step of the other path: four MULS
+    MULADD   0,  0,  0, r4, r3
+    MULADD   4,  4,  4, r3, r4
+    MULADD   8,  8,  8, r4, r3
+    MULADD  12, 12, 12, r3, r4
+    MULADD  16, 16, 16, r4, r3
+    MULADD  20, 20, 20, r3, r4
+    MULADD  24, 24, 24, r4, r3
+    MULADD  28, 28, 28, r3, r4
+#else
+    subs    r6, r6, r5              @ yh - yl
+    sbcs    r7, r7
+    eors    r6, r7
+    subs    r6, r6, r7
+    mov     r10, r6                 @ |yh - yl|
+    mov     lr, r7                  @ its sign
+    KMULADD  0, r4, r3
+    KMULADD  4, r3, r4
+    KMULADD  8, r4, r3
+    KMULADD 12, r3, r4
+    KMULADD 16, r4, r3
+    KMULADD 20, r3, r4
+    KMULADD 24, r4, r3
+    KMULADD 28, r3, r4
+#endif
+    ldr     r0, [sp, #32]           @ t[8] += carry
+    adds    r0, r0, r3
+    str     r0, [sp, #32]
+    movs    r2, #0                  @ leaves the carry alone
+    adcs    r2, r2
+    str     r2, [sp, #T_OVF]
+    mov     r0, r12                 @ which field: p[0] is 1 for BLS12-381 r
+    ldr     r0, [r0, #0]
+    cmp     r0, #1
+    bne     .Lred_bn
+    b       .Lred_bls
+.Lred_bn:
+    MONT_M_BN254R
+    REDROW_BN254R
+    b       .Lred_tail
+#endif
     .size   zkn_mul_mont_256, . - zkn_mul_mont_256
 
 #endif /* Thumb-1 only */

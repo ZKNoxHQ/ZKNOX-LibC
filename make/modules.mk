@@ -61,7 +61,8 @@ SRCS_AES       := src/aes/zkn_aes_gcm.c
 # Curve operations: twisted Edwards (BabyJubjub, Bandersnatch)
 SRCS_CURVE     := src/ecc/zkn_tEdwards.c \
                   src/ecc/bbjj_precomp.c \
-                  src/ecc/bandersnatch_precomp.c
+                  src/ecc/bandersnatch_precomp.c \
+                  src/ecc/zkn_fixedbase72_tables.c
 
 # EdDSA-Poseidon signing
 SRCS_EDDSA     := src/ecc/zkn_eddsa.c

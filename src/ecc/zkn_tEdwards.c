@@ -11,6 +11,7 @@
 #include "zkn_tEdwards.h"
 #include "bbjj_precomp.h"
 #include "bandersnatch_precomp.h"
+#include "zkn_fixedbase72_tables.h"
 
 int tEdwards_alloc(zkn_edcurve_t *curve, zkn_edpoint_t *G)
 {
@@ -1171,13 +1172,16 @@ int tEdwards_fixedBase_2MSM(zkn_edcurve_t *curve, const uint8_t *k, zkn_edpoint_
  *
  * Selected by ZKN_FIXEDBASE_FLASH_TABLE, software bignums only.
  *
- * k: 32 bytes, big endian. Windows as in the standard version: bits 0..63
- * weigh P1 = G, then P2 = 2^64.G, P3 = 2^128.G, P4 = 2^192.G.
+ * k: 4 * wbytes bytes, big endian, in four windows of wbytes bytes. With
+ * wbytes = 8 they are those of the standard version: bits 0..63 weigh
+ * P1 = G, then P2 = 2^64.G, P3 = 2^128.G, P4 = 2^192.G. With wbytes = 9 the
+ * table is the one of zkn_fixedbase72_tables.c, for a blinded scalar: 72
+ * steps, the points 2^72 apart.
  */
 static int tEdwards_4MSM_flash_table_ct(zkn_edcurve_t *curve,
                                         const uint8_t (*T_mx)[32],
                                         const uint8_t (*T_my)[32],
-                                        const uint8_t *k,
+                                        const uint8_t *k, unsigned wbytes,
                                         zkn_edpoint_t *R)
 {
   if (curve->fieldsize8 != 32)
@@ -1198,14 +1202,15 @@ static int tEdwards_4MSM_flash_table_ct(zkn_edcurve_t *curve,
   ZKN_CHECK(tEdwards_SetNeutral(curve, R));
   ZKN_CHECK(tEdwards_Coronize(curve, R));
 
-  for (int pos = 63; pos >= 0; pos--)
+  const int top = (int)(wbytes << 3) - 1;
+  for (int pos = top; pos >= 0; pos--)
   {
-    /* One bit of each 64-bit window; the positions are public. */
-    const unsigned byte = 7u - ((unsigned)pos >> 3);
+    /* One bit of each window; the positions are public. */
+    const unsigned byte = (wbytes - 1u) - ((unsigned)pos >> 3);
     const unsigned shift = (unsigned)pos & 7u;
-    const uint8_t sel = (uint8_t)((((k[24 + byte] >> shift) & 1u) << 3) |
-                                  (((k[16 + byte] >> shift) & 1u) << 2) |
-                                  (((k[8 + byte] >> shift) & 1u) << 1) |
+    const uint8_t sel = (uint8_t)((((k[3u * wbytes + byte] >> shift) & 1u) << 3) |
+                                  (((k[2u * wbytes + byte] >> shift) & 1u) << 2) |
+                                  (((k[wbytes + byte] >> shift) & 1u) << 1) |
                                   ((k[byte] >> shift) & 1u));
 
     /* Oblivious lookup: every entry is read, the one with i == sel is kept. */
@@ -1232,7 +1237,7 @@ static int tEdwards_4MSM_flash_table_ct(zkn_edcurve_t *curve,
     ZKN_CHECK(tEdwards_double(curve, R, R));
     ZKN_CHECK(tEdwards_add_affine(curve, R, &Tsel, R));
 
-    const int iter = 63 - pos;
+    const int iter = top - pos;
     if (iter > 0 && (iter % CORONIZE_PERIOD) == 0)
     {
       ZKN_CHECK(tEdwards_Coronize(curve, R));
@@ -1244,6 +1249,80 @@ end: __attribute__((unused))
   /* The last selected entry tells the low bit of each window. */
   explicit_bzero(Tsel_x, sizeof(Tsel_x));
   explicit_bzero(Tsel_y, sizeof(Tsel_y));
+  return error;
+}
+
+/* out = k + lambda * l: 36 bytes big endian from k (32 bytes big endian),
+ * lambda (32 bits) and the subgroup order l.
+ *
+ * Digits of 16 bits, so that a product and the two digits added to it fit 32
+ * bits: (2^16-1)^2 + 2*(2^16-1) = 2^32 - 1. On a Thumb-1 core each product is
+ * then one MULS. A 64-bit product would go through __aeabi_lmul, which
+ * branches on its operands, and both lambda and k are secret.
+ *
+ * The digits live in out itself: digit i is out[34 - 2i], out[35 - 2i]. */
+static void blind_scalar(const zkn_bn_t order, const uint8_t k[32], uint32_t lambda, uint8_t out[36])
+{
+  out[0] = out[1] = out[2] = out[3] = 0;
+  memcpy(out + 4, k, 32);
+
+  for (unsigned j = 0; j < 2; j++)
+  {
+    const uint32_t lj = (lambda >> (16u * j)) & 0xFFFFu;
+    uint32_t carry = 0;
+    for (unsigned i = 0; i < 16; i++)
+    {
+      const uint32_t li = (order[i >> 1] >> (16u * (i & 1u))) & 0xFFFFu;
+      uint8_t *digit = out + 34 - 2u * (i + j);
+      const uint32_t acc = li * lj + (((uint32_t)digit[0] << 8) | digit[1]) + carry;
+      digit[0] = (uint8_t)(acc >> 8);
+      digit[1] = (uint8_t)acc;
+      carry = acc >> 16;
+    }
+    /* Digit 16 + j is still zero: the sum is below 2^288. */
+    out[2 - 2u * j] = (uint8_t)(carry >> 8);
+    out[3 - 2u * j] = (uint8_t)carry;
+  }
+}
+
+int tEdwards_fixedBase_4MSM_masked(zkn_edcurve_t *curve, const uint8_t *k, uint32_t lambda, zkn_edpoint_t *R)
+{
+  const uint8_t (*T_mx)[32];
+  const uint8_t (*T_my)[32];
+  uint8_t kb[36];
+  int error;
+
+  if (curve->curveID == _BABYJUJUB_ID)
+  {
+    bbjj_get_4msm72_table(&T_mx, &T_my);
+  }
+  else if (curve->curveID == _BANDERSNATCH_ID)
+  {
+    bandersnatch_get_4msm72_table(&T_mx, &T_my);
+  }
+  else
+  {
+    return ZKN_NOTIMPLEMENTED;
+  }
+
+  blind_scalar(curve->order, k, lambda, kb);
+  error = tEdwards_4MSM_flash_table_ct(curve, T_mx, T_my, kb, 9, R);
+  explicit_bzero(kb, sizeof(kb));
+  return error;
+}
+
+int tEdwards_fixedBase_4MSM_blind(zkn_edcurve_t *curve, const uint8_t *k, zkn_edpoint_t *R)
+{
+  uint8_t rnd[4];
+  uint32_t lambda;
+  int error;
+
+  zkn_trng_get_random_data(rnd, sizeof(rnd));
+  lambda = ((uint32_t)rnd[0] << 24) | ((uint32_t)rnd[1] << 16) | ((uint32_t)rnd[2] << 8) | rnd[3];
+  error = tEdwards_fixedBase_4MSM_masked(curve, k, lambda, R);
+  explicit_bzero(rnd, sizeof(rnd));
+  lambda = 0;
+  (void)lambda;
   return error;
 }
 #endif /* ZKN_FIXEDBASE_FLASH_TABLE && ZKN_BN_BACKEND_SW */
@@ -1266,7 +1345,7 @@ int tEdwards_fixedBase_4MSM(zkn_edcurve_t *curve, const uint8_t *k, zkn_edpoint_
     return ZKN_NOTIMPLEMENTED;
   }
 
-  return tEdwards_4MSM_flash_table_ct(curve, T_mx, T_my, k, R);
+  return tEdwards_4MSM_flash_table_ct(curve, T_mx, T_my, k, 8, R);
 #elif defined(ZKN_LOW_RAM)
   if (curve->curveID == _BABYJUJUB_ID)
   {

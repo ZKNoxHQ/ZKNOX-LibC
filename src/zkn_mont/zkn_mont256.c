@@ -56,8 +56,10 @@ static void ct_final_sub(zkn_limb_t r[N],
 /* On Thumb-1 cores (ARMv6-M, the original Nano S) the multiplication comes
  * from zkn_mont256_armv6m.S: same algorithm, same output, 0.34 to 0.56 of the
  * cycles depending on the multiplier of the core (figures and method in
- * tools/mont256_armv6m_check.py). ZKN_MONT256_NO_ASM keeps the C version
- * below. */
+ * tools/mont256_armv6m_check.py). For the two fields the curves are defined
+ * over it has a second path, about 0.58 of the first on a core whose MULS
+ * takes 32 cycles; ZKN_MONT256_NO_FIELD_PATHS leaves that path out.
+ * ZKN_MONT256_NO_ASM keeps the C version below. */
 #if defined(__ARM_ARCH_ISA_THUMB) && (__ARM_ARCH_ISA_THUMB == 1) && !defined(ZKN_MONT256_NO_ASM)
 #define ZKN_MONT256_MUL_ARMV6M 1
 #endif
