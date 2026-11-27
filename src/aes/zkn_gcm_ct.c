@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 ZKNOX
 
+#include "zkn_config.h" /* ZKN_AES_GCM_OVER_CX_AES follows the target */
+
 #if defined(ZKN_HOST_BUILD) || defined(ZKN_AES_GCM_OVER_CX_AES)
 
 #include <stdint.h>

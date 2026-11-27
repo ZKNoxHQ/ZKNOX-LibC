@@ -31,6 +31,7 @@
 #define ZKN_POSEIDON_OPT_TABLES_H
 
 #include <stdint.h>
+#include "zkn_config.h"
 
 /* Arities compiled in, one mask per field: bit n set = Poseidon-n
  * (n inputs, t = n + 1). A build that needs fewer can pass, e.g.,

@@ -15,6 +15,10 @@
 #ifndef ZKN_BN_H
 #define ZKN_BN_H
 
+/* The options of the build, the same for every source: the file of the
+ * application, what ZKN_LOW_RAM brings with it, what follows the target. */
+#include "zkn_config.h"
+
 #if defined(ZKN_BN_BACKEND_LEDGER) && defined(ZKN_BN_BACKEND_SW)
 #  error "Cannot define both ZKN_BN_BACKEND_LEDGER and ZKN_BN_BACKEND_SW"
 #endif

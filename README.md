@@ -38,6 +38,30 @@ make WITH_PLONK=0               # exclude the PLONK verifier
 make help                       # show all variables
 ```
 
+## Configuration
+
+The options of a build are resolved in one header,
+[src/common/zkn_config.h](src/common/zkn_config.h), included first by
+`zkn_bn.h`:
+
+* An application names its own configuration header with
+  `-DZKN_CONFIG_FILE='"file.h"'` (`make ZKN_CONFIG_FILE=path`). It is included
+  before the defaults and holds `#define` lines: `POSEIDON_MAX_INPUTS`,
+  `ZKN_POSEIDON_ARITIES`, `ZKN_FROST_MAX_SIGNERS`, or any option below.
+* `ZKN_LOW_RAM` (`make ZKN_LOW_RAM=1`) is the one switch of a port to a
+  target with a few kilobytes of RAM, such as the Ledger Nano S: signing and
+  the threshold paths in phases, compact BLAKE-512 and `mod_mul`, and with
+  the software bignums the fixed-base table read from flash
+  (`ZKN_FIXEDBASE_FLASH_TABLE`) and the blinded key scalar
+  (`ZKN_FIXEDBASE_SCALAR_BLINDING`). `make ZKN_FIXEDBASE_FLASH_TABLE=0` or
+  `ZKN_FIXEDBASE_SCALAR_BLINDING=0` takes one out, `=1` sets it without
+  `ZKN_LOW_RAM`.
+* What depends on the chip or on its SDK follows the target: on Nano S, GCM
+  over the AES block syscall, the two work-arounds of the cx backend and the
+  Thumb-1 multiplication.
+
+See [DECISIONS.md](DECISIONS.md), ADR-003.
+
 License: MIT.
 
 ## Integration

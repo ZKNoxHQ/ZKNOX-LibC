@@ -115,3 +115,78 @@ be applied to any number k of partial rounds, counted from the last.
   dense rounds, from 3 inputs up, with no table. Left out of this version: on
   a build that uses the assembly multiplication (`ZKN_MONT256_ASM`) the
   accumulation has to be written in Thumb-2 assembly as well.
+
+## ADR-003 — One configuration header; `ZKN_LOW_RAM` is the low-RAM profile
+
+Date: 2026-11-27. Status: accepted.
+
+### Context
+
+A port to a target with a few kilobytes of RAM (Ledger Nano S, 4.6 KB for
+statics and stack together) needed a list of defines on the command line of
+the application: `ZKN_LOW_RAM`, `ZKN_FIXEDBASE_FLASH_TABLE`,
+`ZKN_FIXEDBASE_SCALAR_BLINDING`, `ZKN_AES_GCM_OVER_CX_AES`, and the sizes the
+application wanted (`POSEIDON_MAX_INPUTS`, `ZKN_POSEIDON_ARITIES`,
+`ZKN_FROST_MAX_SIGNERS`). Each build system that compiles the library had to
+repeat the list, and nothing tied the entries together.
+
+### Decision
+
+1. `src/common/zkn_config.h` resolves the options. `zkn_bn.h` includes it
+   first, and so does each file that tests an option without the bignums
+   (`aes/zkn_gcm_ct.c`, `aes/zkn_aes_gcm.c`, `zkn_mont/zkn_poseidon_opt_tables.h`).
+2. `ZKN_LOW_RAM` is the one switch of such a port. Besides the variants it
+   already selected in the sources, with the software bignums it now brings
+   `ZKN_FIXEDBASE_FLASH_TABLE` and `ZKN_FIXEDBASE_SCALAR_BLINDING`. Both stay
+   options of their own: defined alone they apply without `ZKN_LOW_RAM`, and
+   `ZKN_FIXEDBASE_NO_FLASH_TABLE` / `ZKN_FIXEDBASE_NO_SCALAR_BLINDING` take
+   them out of the profile. The Makefile gives each three values: unset
+   follows `ZKN_LOW_RAM`, 1 is on, 0 is off.
+3. An application gives its own values in a header named with
+   `-DZKN_CONFIG_FILE='"file.h"'` (`ZKN_CONFIG_FILE=path` for the Makefile).
+   `zkn_config.h` includes it before the defaults, in every source, so the
+   library and the application are built for the same sizes.
+4. What depends on the chip or on its SDK follows the target. In a device
+   build `zkn_config.h` reads `bolos_target.h` when the SDK provides it and
+   defines `ZKN_AES_GCM_OVER_CX_AES` for `TARGET_NANOS`. The two work-arounds
+   of the cx backend on that target were already set that way in `zkn_bn.h`,
+   and the Thumb-1 multiplication already enabled itself on an ARMv6-M core.
+   `zkn_mont256.c` drops `ZKN_MONT256_ASM` on a core without Thumb-2, so a
+   build can ask for the assembly on every target.
+
+### Consequences
+
+* A Nano S application sets `ZKN_LOW_RAM` and nothing else for the library.
+* `make test ZKN_LOW_RAM=1` now tests the flash table and the blinded
+  scalar, which is what a Nano S runs with the software bignums. The
+  two-window multiplication with its table in RAM, which the cx backend runs
+  there, is `make test ZKN_LOW_RAM=1 ZKN_FIXEDBASE_FLASH_TABLE=0`.
+* Same code as before, option for option. The 40 objects of the archive
+  (`ZKNOX_DEBUG=1 ZKN_FROST=1 WITH_KEYS=1`) are byte-identical in the five
+  pairs checked:
+
+  | Before | Now |
+  |---|---|
+  | default | default |
+  | `ZKN_LOW_RAM=1 ZKN_FIXEDBASE_FLASH_TABLE=1 ZKN_FIXEDBASE_SCALAR_BLINDING=1` | `ZKN_LOW_RAM=1` |
+  | `ZKN_LOW_RAM=1` | `ZKN_LOW_RAM=1 ZKN_FIXEDBASE_FLASH_TABLE=0` |
+  | `ZKN_LOW_RAM=1 ZKN_FIXEDBASE_FLASH_TABLE=1` | `ZKN_LOW_RAM=1 ZKN_FIXEDBASE_SCALAR_BLINDING=0` |
+  | `ZKN_FIXEDBASE_FLASH_TABLE=1` | `ZKN_FIXEDBASE_FLASH_TABLE=1` |
+
+  `make test` passes its 29 suites in each of them and with
+  `ZKN_FIXEDBASE_FLASH_TABLE=1 ZKN_FIXEDBASE_SCALAR_BLINDING=1`.
+* `zkn_poseidon_opt_tables.h` is generated: the include of `zkn_config.h` is
+  written by `tools/gen_poseidon_opt.py`, whose output equals the two files
+  of the tree.
+* A build that defined `ZKN_MONT256_ASM` for a core without Thumb-2 used to
+  fail at link time. It now compiles the C functions.
+
+### Alternatives not retained
+
+* The sizes of the Nano S application (Poseidon context for 5 inputs, quorum
+  of 3) as defaults of the library under `ZKN_LOW_RAM`. They are the numbers
+  of one application, and the tests of the library hash with 6 and 7 inputs
+  in low-RAM mode.
+* Looking for a configuration file of a fixed name with `__has_include`. A
+  missing include path would build the defaults without a word; a named file
+  that is not found stops the build.

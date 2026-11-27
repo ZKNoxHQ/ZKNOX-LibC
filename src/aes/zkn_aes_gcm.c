@@ -10,6 +10,7 @@
 
 #include "os.h"
 #include "cx.h"
+#include "zkn_config.h" /* ZKN_AES_GCM_OVER_CX_AES follows the target */
 #include "zkn_aes_gcm.h"
 
 #if defined(ZKN_AES_GCM_OVER_CX_AES)

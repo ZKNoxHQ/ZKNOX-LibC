@@ -51,6 +51,14 @@ static void ct_final_sub(zkn_limb_t r[N],
  *  Core arithmetic — guarded by ZKN_MONT256_ASM
  * ══════════════════════════════════════════════════════════════════════ */
 
+/* ZKN_MONT256_ASM takes the core functions from zkn_mont256_arm32.S, which is
+ * Thumb-2 and assembles to nothing on any other core. There the request is
+ * dropped and the functions below are compiled, so a build can ask for the
+ * assembly on every target. */
+#if defined(ZKN_MONT256_ASM) && !(defined(__ARM_ARCH_ISA_THUMB) && (__ARM_ARCH_ISA_THUMB >= 2))
+#undef ZKN_MONT256_ASM
+#endif
+
 #if !defined(ZKN_MONT256_ASM)
 
 /* On Thumb-1 cores (ARMv6-M, the original Nano S) the multiplication comes
