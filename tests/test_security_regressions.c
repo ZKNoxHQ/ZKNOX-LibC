@@ -135,6 +135,103 @@ static void test_eddsa(void)
         eddsa_sign_on(_BANDERSNATCH_ID, prv, prv, big, sig) != 0);
 }
 
+/* ═════════════════════════ EdDSA: the signature verifies on its curve ═════════════════════════ */
+
+static int eddsa_pub_on(uint32_t curve_id, const uint8_t prv[32], uint8_t ax[32], uint8_t ay[32])
+{
+  zkn_edcurve_t c; zkn_edpoint_t P; uint8_t k[32];
+  int rc = tEdwards_Curve_alloc_init(&c, curve_id);
+  rc |= tEdwards_alloc(&c, &P);
+  memcpy(k, prv, 32);
+  rc |= zkn_prv2pub(&c, k, &P);
+  rc |= tEdwards_export(&c, &P, ax, ay);
+  return rc;
+}
+
+/* verifyPoseidon, written out: [S]B8 == R8 + [8h]A with
+ * h = Poseidon(R8.x, R8.y, A.x, A.y, M) over the base field of the curve, and
+ * S below the order of the curve. zkn_frost_verify is not used: it hashes over
+ * the BabyJubjub field whatever the curve.
+ * 1 when the signature verifies, 0 when it does not, -1 on error. */
+static int eddsa_verify_on(uint32_t curve_id, const uint8_t ax[32], const uint8_t ay[32],
+                           const uint8_t msg_le[32], const uint8_t sig[96])
+{
+  zkn_edcurve_t c; zkn_poseidon_ctx_t P; zkn_bn_t hm;
+  zkn_edpoint_t L, R, A, T;
+  uint8_t h[32], m_be[32], ord[32], lx[32], ly[32], tx[32], ty[32];
+  int rc = tEdwards_Curve_alloc_init(&c, curve_id);
+
+  rc |= zkn_bn_export(c.order, ord, 32);
+  if (rc) return -1;
+  if (memcmp(sig + 64, ord, 32) >= 0) return 0;
+
+  for (int i = 0; i < 32; i++) m_be[i] = msg_le[31 - i];
+  const uint8_t *in[5] = {sig, sig + 32, ax, ay, m_be};
+  rc |= zkn_poseidon_init(&P, 5, 5, &c.ctx, c.modulus);
+  for (int i = 0; i < 5; i++)
+  {
+    rc |= zkn_bn_init(P.state[i + 1], in[i], 32);
+    rc |= zkn_mont_to_montgomery(P.state[i + 1], P.state[i + 1], &c.ctx);
+  }
+  rc |= zkn_bn_alloc(&hm, 32);
+  rc |= zkn_poseidon(&P, 0, &hm, 1);
+  rc |= zkn_mont_from_montgomery(hm, hm, &c.ctx);
+  rc |= zkn_bn_export(hm, h, 32);
+  rc |= zkn_poseidon_destroy(&P);
+
+  rc |= tEdwards_alloc(&c, &L);
+  rc |= tEdwards_alloc(&c, &T);
+  rc |= tEdwards_alloc_init(&c, (uint8_t *)sig, (uint8_t *)sig + 32, &R);
+  rc |= tEdwards_alloc_init(&c, (uint8_t *)ax, (uint8_t *)ay, &A);
+  rc |= tEdwards_scalarMul(&c, &c.G, sig + 64, 32, &L);          /* [S]B8 */
+  rc |= tEdwards_scalarMul(&c, &A, h, 32, &T);                   /* [h]A  */
+  for (int i = 0; i < 3; i++) rc |= tEdwards_double(&c, &T, &T); /* [8h]A */
+  rc |= tEdwards_add(&c, &R, &T, &T);
+  rc |= tEdwards_export(&c, &L, lx, ly);
+  rc |= tEdwards_export(&c, &T, tx, ty);
+  if (rc) return -1;
+  return memcmp(lx, tx, 32) == 0 && memcmp(ly, ty, 32) == 0;
+}
+
+/* The signer reduced r and S modulo the BabyJubjub subgroup order on every
+ * curve: no Bandersnatch signature verified. */
+static void test_eddsa_verifies(void)
+{
+  printf("\n── EdDSA-Poseidon: signatures verify on their curve ──\n");
+  static const struct { uint32_t id; const char *name; } curves[] = {
+    {_BABYJUJUB_ID, "BabyJubjub"}, {_BANDERSNATCH_ID, "Bandersnatch"}};
+  char label[96];
+
+  for (size_t k = 0; k < sizeof(curves) / sizeof(curves[0]); k++)
+  {
+    uint8_t prv[32], msg[32], sig[96], ax[32], ay[32];
+    int all = 1;
+    for (int t = 0; t < 8; t++)
+    {
+      for (int i = 0; i < 32; i++)
+      {
+        prv[i] = (uint8_t)(0x11 + 7 * i + 29 * t);
+        msg[i] = (uint8_t)(0xa0 ^ (3 * i) ^ (t << 4));
+      }
+      msg[31] &= 0x0f; /* little-endian: below both base fields */
+      all &= eddsa_pub_on(curves[k].id, prv, ax, ay) == 0;
+      all &= eddsa_sign_on(curves[k].id, prv, prv, msg, sig) == 0;
+      all &= eddsa_verify_on(curves[k].id, ax, ay, msg, sig) == 1;
+    }
+    snprintf(label, sizeof(label), "%s: 8 signatures verify under their public key", curves[k].name);
+    check(label, all);
+
+    /* The equation above does refuse: the last signature, altered. */
+    sig[95] ^= 1;
+    int bad_s = eddsa_verify_on(curves[k].id, ax, ay, msg, sig);
+    sig[95] ^= 1;
+    msg[0] ^= 1;
+    int bad_m = eddsa_verify_on(curves[k].id, ax, ay, msg, sig);
+    snprintf(label, sizeof(label), "%s: an altered S or message does not verify", curves[k].name);
+    check(label, bad_s == 0 && bad_m == 0);
+  }
+}
+
 /* ═════════════════════════ FROST ═════════════════════════ */
 
 #define FS 32
@@ -510,6 +607,7 @@ int main(void)
   printf("== security regression tests ==\n");
   test_bignum();
   test_eddsa();
+  test_eddsa_verifies();
   test_frost();
   test_vss();
   test_miller();

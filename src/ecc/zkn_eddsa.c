@@ -200,19 +200,34 @@ int EddsaPoseidon_Sign_final(zkn_edcurve_t *curve, uint8_t *prv, zkn_edpoint_t *
   for (size_t i = 0; i < 64; i++)
     sbuff[i] = rbuff[63 - i]; // 512-bit BE: sbuff[0..32]=hi, sbuff[32..64]=lo
 
-  /* l = BabyJubjub subgroup order */
-  static const uint8_t order_l[32] = {
-      0x06, 0x0c, 0x89, 0xce, 0x5c, 0x26, 0x34, 0x05, 0x37, 0x0a, 0x08, 0xb6, 0xd0, 0x30, 0x2b, 0x0b,
-      0xab, 0x3e, 0xed, 0xb8, 0x39, 0x20, 0xee, 0x0a, 0x67, 0x72, 0x97, 0xdc, 0x39, 0x21, 0x26, 0xf1};
-  /* 2^256 mod l (precomputed) */
-  static const uint8_t two256_mod_l[32] = {
-      0x01, 0xf1, 0x64, 0x24, 0xe1, 0xbb, 0x77, 0x24, 0xf8, 0x5a, 0x92, 0x01, 0xd8, 0x18, 0xf0, 0x15,
-      0xe7, 0xac, 0xff, 0xc6, 0xa0, 0x98, 0xf2, 0x4b, 0x07, 0x33, 0x15, 0xde, 0xa0, 0x8f, 0x9c, 0x76};
+  /* l = subgroup order of the signing curve.
+   *
+   * It used to be the BabyJubjub order, hard-coded, for every curve. On
+   * Bandersnatch r and S were then reduced modulo the order of another group,
+   * and the signature did not satisfy [S]B = R + [8h]A.
+   *
+   * curve->order is released with the work variables before S is computed
+   * (tEdwards_Curve_partial_destroy), hence the byte copy. */
+  uint8_t order_l[32];
+  ZKN_CHECK(zkn_bn_export(curve->order, order_l, 32));
+  /* 2^256 mod l, from 2^256 - l: congruent to 2^256, and it fits the 256-bit
+   * bignum. `scalar` is free until r is exported. */
+  {
+    unsigned carry = 1;
+    for (size_t i = 32; i-- > 0;)
+    {
+      carry += (uint8_t)~order_l[i];
+      scalar[i] = (uint8_t)carry;
+      carry >>= 8;
+    }
+  }
 
   zkn_bn_t bn_l, bn_c, bn_hi, bn_lo;
   ZKN_CHECK(zkn_bn_alloc_init(&bn_l, 32, order_l, 32));
-  ZKN_CHECK(zkn_bn_alloc_init(&bn_c, 32, two256_mod_l, 32));
-  ZKN_CHECK(zkn_bn_alloc_init(&bn_hi, 32, sbuff, 32));        /* hi (BE) */
+  ZKN_CHECK(zkn_bn_alloc_init(&bn_hi, 32, scalar, 32));       /* 2^256 - l */
+  ZKN_CHECK(zkn_bn_alloc(&bn_c, 32));
+  ZKN_CHECK(zkn_bn_reduce(bn_c, bn_hi, bn_l));                /* 2^256 mod l */
+  ZKN_CHECK(zkn_bn_init(bn_hi, sbuff, 32));                   /* hi (BE) */
   ZKN_CHECK(zkn_bn_alloc_init(&bn_lo, 32, sbuff + 32, 32));   /* lo (BE) */
 
   ZKN_CHECK(zkn_bn_alloc(&red_r, 32));
