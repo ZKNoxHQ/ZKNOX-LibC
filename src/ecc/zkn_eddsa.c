@@ -150,8 +150,8 @@ static ZKN_NOINLINE int lr_check_pub(zkn_edcurve_t *curve, uint8_t *prv, zkn_edp
   ZKN_CHECK(tEdwards_alloc(curve, &Pd));
   ZKN_CHECK(zkn_prv2pub(curve, prv, &Pd)); /* normalized, Montgomery */
   ZKN_CHECK(tEdwards_normalize(curve, Pub));
-  ZKN_CHECK(zkn_bn_cmp(Pd.x, Pub->x, &cx));
-  ZKN_CHECK(zkn_bn_cmp(Pd.y, Pub->y, &cy));
+  ZKN_CHECK(zkn_bn_cmp_mod(Pd.x, Pub->x, curve->modulus, &cx));
+  ZKN_CHECK(zkn_bn_cmp_mod(Pd.y, Pub->y, curve->modulus, &cy));
   ZKN_CHECK(tEdwards_destroy(curve, &Pd));
   if (cx != 0 || cy != 0)
     error = ZKN_ERR_INVALID_PARAM;
@@ -493,8 +493,10 @@ int EddsaPoseidon_Sign_final(zkn_edcurve_t *curve, uint8_t *prv, zkn_edpoint_t *
     ZKN_CHECK(tEdwards_alloc(curve, &Pd));
     ZKN_CHECK(zkn_prv2pub(curve, prv, &Pd));     /* normalized, Montgomery */
     ZKN_CHECK(tEdwards_normalize(curve, Pub));
-    ZKN_CHECK(zkn_bn_cmp(Pd.x, Pub->x, &cx));
-    ZKN_CHECK(zkn_bn_cmp(Pd.y, Pub->y, &cy));
+    /* As residues: both are affine and in Montgomery form, but a backend
+     * may hold a coordinate as its value plus p (zkn_bn.h). */
+    ZKN_CHECK(zkn_bn_cmp_mod(Pd.x, Pub->x, curve->modulus, &cx));
+    ZKN_CHECK(zkn_bn_cmp_mod(Pd.y, Pub->y, curve->modulus, &cy));
     ZKN_CHECK(tEdwards_destroy(curve, &Pd));
     if (cx != 0 || cy != 0)
     {

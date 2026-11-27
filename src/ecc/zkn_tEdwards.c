@@ -162,7 +162,7 @@ int tEdwards_IsOnCurve(zkn_edcurve_t *curve, zkn_edpoint_t *P, bool *flag)
 
   ZKN_CHECK(zkn_mont_from_montgomery(curve->d, curve->d, &curve->ctx));
   ZKN_CHECK(zkn_mont_from_montgomery(curve->e, curve->e, &curve->ctx));
-  ZKN_CHECK(zkn_bn_cmp(curve->d, curve->e, &cmp)); // a.x^2+y^2 == 1+d(x^2*y^2) ?
+  ZKN_CHECK(zkn_bn_cmp_mod(curve->d, curve->e, curve->modulus, &cmp)); // a.x^2+y^2 == 1+d(x^2*y^2) ?
 
   *flag = (bool)(cmp == 0);
 
@@ -210,8 +210,9 @@ int tEdwards_IsNeutral(zkn_edcurve_t *curve, zkn_edpoint_t *P, bool *flag)
 {
   ZKN_ERROR_INIT();
   int cx = 1, cyz = 1;
-  ZKN_CHECK(zkn_bn_cmp_u32(P->x, 0, &cx));
-  ZKN_CHECK(zkn_bn_cmp(P->y, P->z, &cyz));
+  /* As residues: a backend may hold a coordinate as its value plus p. */
+  ZKN_CHECK(zkn_bn_cmp_u32_mod(P->x, 0, curve->modulus, &cx));
+  ZKN_CHECK(zkn_bn_cmp_mod(P->y, P->z, curve->modulus, &cyz));
   *flag = (cx == 0 && cyz == 0);
   ZKN_UNUSED(curve);
   ZKN_ERROR_CLOSE();
