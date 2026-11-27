@@ -58,6 +58,13 @@ static void aes_encrypt_block(const uint8_t rk[(NR+1)*16], const uint8_t in[16],
   }
   memcpy(out,s,16);
 }
+/* One AES-256 block, for the host tests of zkn_gcm_ct (key schedule redone
+ * on every call: test use only). */
+void zkn_sw_aes256_encrypt_block(const uint8_t key[32], const uint8_t in[16], uint8_t out[16]){
+  uint8_t rk[(NR+1)*16]; key_expand(key,rk);
+  aes_encrypt_block(rk,in,out);
+  explicit_bzero(rk,sizeof rk);
+}
 /* ---------------- GHASH (GF(2^128)) ---------------- */
 static void ghash_mul(uint8_t X[16], const uint8_t H[16]){
   uint8_t Z[16]={0}, V[16]; memcpy(V,H,16);

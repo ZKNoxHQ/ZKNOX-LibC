@@ -113,21 +113,21 @@ static int eddsa_msg_is_field_element(const uint8_t *msg_le, const uint8_t *p_be
  *      challenge   hm = Poseidon(R, Pub, msg)
  *      response    S = r + hm*s mod l             -> out[64..96]
  *
+ *  l is the subgroup order of the signing curve, read from the curve as in
+ *  the standard implementation. `challenge` releases curve->order with the
+ *  work variables, so the bytes of l cross it in the 64 bytes of scratch
+ *  that held H, free once r is reduced: no stack is added for them.
+ *
  *  s is recomputed in `response` instead of being carried across the
  *  scalar multiplications: one more BLAKE-512 block, 32 secret bytes less
  *  on the stack at the deepest point.
+ *
+ *  EddsaPoseidon_Sign is the same signer without the caller's Pub: it
+ *  derives the public key itself, once, so `check_pub` has nothing to
+ *  compare and is replaced by that derivation.
  * ══════════════════════════════════════════════════════════════════════ */
 
 #define ZKN_NOINLINE __attribute__((noinline))
-
-/* l = BabyJubjub subgroup order, and 2^256 mod l: the constants of the
- * standard implementation. */
-static const uint8_t lr_order_l[32] = {
-    0x06, 0x0c, 0x89, 0xce, 0x5c, 0x26, 0x34, 0x05, 0x37, 0x0a, 0x08, 0xb6, 0xd0, 0x30, 0x2b, 0x0b,
-    0xab, 0x3e, 0xed, 0xb8, 0x39, 0x20, 0xee, 0x0a, 0x67, 0x72, 0x97, 0xdc, 0x39, 0x21, 0x26, 0xf1};
-static const uint8_t lr_two256_mod_l[32] = {
-    0x01, 0xf1, 0x64, 0x24, 0xe1, 0xbb, 0x77, 0x24, 0xf8, 0x5a, 0x92, 0x01, 0xd8, 0x18, 0xf0, 0x15,
-    0xe7, 0xac, 0xff, 0xc6, 0xa0, 0x98, 0xf2, 0x4b, 0x07, 0x33, 0x15, 0xde, 0xa0, 0x8f, 0x9c, 0x76};
 
 /* Re-derive the public key from prv and refuse a caller-supplied Pub that
  * does not match it ("double public key" signing oracle, see the standard
@@ -179,22 +179,35 @@ end: __attribute__((unused))
 /* r_be = h mod l, with 256-bit arithmetic only:
  *     r = (lo + hi * (2^256 mod l)) mod l
  * (see the standard implementation for why a single 512-bit reduce is not
- * available on the SW backend). */
-static ZKN_NOINLINE int lr_nonce_reduce(const uint8_t h_be[64], uint8_t r_be[32])
+ * available on the SW backend). l is curve->order, still allocated here. */
+static ZKN_NOINLINE int lr_nonce_reduce(zkn_edcurve_t *curve, const uint8_t h_be[64], uint8_t r_be[32])
 {
   ZKN_ERROR_INIT();
-  zkn_bn_t bn_l, bn_c, bn_hi, bn_lo, red_r;
+  zkn_bn_t bn_c, bn_hi, bn_lo, red_r;
 
-  ZKN_CHECK(zkn_bn_alloc_init(&bn_l, 32, lr_order_l, 32));
-  ZKN_CHECK(zkn_bn_alloc_init(&bn_c, 32, lr_two256_mod_l, 32));
-  ZKN_CHECK(zkn_bn_alloc_init(&bn_hi, 32, h_be, 32));      /* hi (BE) */
+  /* 2^256 mod l, from 2^256 - l: congruent to 2^256, and it fits the 256-bit
+   * bignum. r_be is free until r is exported. */
+  ZKN_CHECK(zkn_bn_export(curve->order, r_be, 32));
+  {
+    unsigned carry = 1;
+    for (size_t i = 32; i-- > 0;)
+    {
+      carry += (uint8_t)~r_be[i];
+      r_be[i] = (uint8_t)carry;
+      carry >>= 8;
+    }
+  }
+  ZKN_CHECK(zkn_bn_alloc_init(&bn_hi, 32, r_be, 32));      /* 2^256 - l */
+  ZKN_CHECK(zkn_bn_alloc(&bn_c, 32));
+  ZKN_CHECK(zkn_bn_reduce(bn_c, bn_hi, curve->order));     /* 2^256 mod l */
+  ZKN_CHECK(zkn_bn_init(bn_hi, h_be, 32));                 /* hi (BE) */
   ZKN_CHECK(zkn_bn_alloc_init(&bn_lo, 32, h_be + 32, 32)); /* lo (BE) */
 
   ZKN_CHECK(zkn_bn_alloc(&red_r, 32));
   /* red_r = hi * (2^256 mod l) mod l */
-  ZKN_CHECK(zkn_bn_mod_mul(red_r, bn_hi, bn_c, bn_l));
+  ZKN_CHECK(zkn_bn_mod_mul(red_r, bn_hi, bn_c, curve->order));
   /* red_r = (red_r + lo) mod l */
-  ZKN_CHECK(zkn_bn_mod_add(red_r, red_r, bn_lo, bn_l));
+  ZKN_CHECK(zkn_bn_mod_add(red_r, red_r, bn_lo, curve->order));
 
   ZKN_CHECK(zkn_bn_export(red_r, r_be, 32));
 
@@ -214,7 +227,7 @@ static ZKN_NOINLINE int lr_commit(zkn_edcurve_t *curve, const uint8_t r_be[32],
 
   ZKN_CHECK(tEdwards_alloc(curve, &R));
   ZKN_CHECK(tEdwards_fixedBase_4MSM(curve, r_be, &R));
-  ZKN_CHECK(tEdwards_normalize(curve, &R));
+  /* tEdwards_export normalizes: one inversion, not two. */
   ZKN_CHECK(tEdwards_export(curve, &R, rx_be, ry_be));
   ZKN_CHECK(tEdwards_destroy(curve, &R));
 
@@ -269,10 +282,11 @@ end: __attribute__((unused))
   return error;
 }
 
-/* S = (r + hm * s) mod l, canonical big-endian. */
+/* S = (r + hm * s) mod l, canonical big-endian. l_be holds l: curve->order
+ * is released by the time this runs. */
 static ZKN_NOINLINE int lr_response(zkn_edcurve_t *curve, const uint8_t *prv,
                                     const uint8_t r_be[32], const uint8_t hm_be[32],
-                                    uint8_t s_out[32])
+                                    const uint8_t l_be[32], uint8_t s_out[32])
 {
   ZKN_ERROR_INIT();
   uint8_t sbuff[64];
@@ -286,7 +300,7 @@ static ZKN_NOINLINE int lr_response(zkn_edcurve_t *curve, const uint8_t *prv,
   ZKN_CHECK(zkn_bn_init(bn_s, sbuff, 32));
   ZKN_CHECK(zkn_bn_init(hm, hm_be, 32));
 
-  ZKN_CHECK(zkn_bn_alloc_init(&bnbig_n, 32, lr_order_l, 32));
+  ZKN_CHECK(zkn_bn_alloc_init(&bnbig_n, 32, l_be, 32));
 
   ZKN_CHECK(zkn_bn_mod_mul(hms, hm, bn_s, bnbig_n)); // hms=hm*s mod q, beware modmul is destructive
   ZKN_CHECK(zkn_bn_init(hm, r_be, 32));              // reload r
@@ -303,41 +317,110 @@ end: __attribute__((unused))
   return error;
 }
 
-int EddsaPoseidon_Sign_final(zkn_edcurve_t *curve, uint8_t *prv, zkn_edpoint_t *Pub, uint8_t *msg, size_t len, uint8_t *out)
+/* len == 32 and msg < p: same check, same bound (curve->modulus) as the
+ * standard implementation. p_be is 32 bytes of scratch. */
+static int lr_check_msg(zkn_edcurve_t *curve, const uint8_t *msg, size_t len, uint8_t *p_be)
 {
-  ZKN_ERROR_INIT();
-  uint8_t wide[64]; /* p, then the 512-bit nonce hash */
-  uint8_t r_be[32]; /* the nonce r */
-  uint8_t hm_be[32];
-
   if (len != 32)
   {
     return ZKN_WRONG_LENGTH;
   }
-  /* The message must be an element of the curve's base field: same check,
-   * same bound (curve->modulus) as the standard implementation. */
-  if (curve->fieldsize8 != 32 || zkn_bn_export(curve->modulus, wide, 32) != ZKN_OK)
+  if (curve->fieldsize8 != 32 || zkn_bn_export(curve->modulus, p_be, 32) != ZKN_OK)
   {
     return ZKN_ERR_INVALID_PARAM;
   }
-  if (!eddsa_msg_is_field_element(msg, wide))
+  if (!eddsa_msg_is_field_element(msg, p_be))
   {
     return ZKN_ERR_INVALID_PARAM;
   }
+  return ZKN_OK;
+}
 
-  ZKN_CHECK(lr_check_pub(curve, prv, Pub));
+/* The steps that follow the public key: nonce, commitment, challenge,
+ * response. Pub is the signer's own public key, normalized and in
+ * Montgomery form; it is consumed. wide is 64 bytes of scratch, wiped.
+ * Inlined in the two entry points, whose frames stay those of a single
+ * function. */
+static inline __attribute__((always_inline)) int lr_sign_steps(zkn_edcurve_t *curve, uint8_t *prv,
+                                                               zkn_edpoint_t *Pub, uint8_t *msg, size_t len,
+                                                               uint8_t *out, uint8_t wide[64])
+{
+  ZKN_ERROR_INIT();
+  uint8_t r_be[32]; /* the nonce r */
+  uint8_t hm_be[32];
 
   ZKN_CHECK(lr_nonce_hash(curve, prv, msg, len, wide));
-  ZKN_CHECK(lr_nonce_reduce(wide, r_be));
-  explicit_bzero(wide, sizeof(wide));
+  ZKN_CHECK(lr_nonce_reduce(curve, wide, r_be));
+  explicit_bzero(wide, 64);
+
+  /* l for lr_response, taken before lr_challenge releases curve->order. */
+  ZKN_CHECK(zkn_bn_export(curve->order, wide, 32));
 
   ZKN_CHECK(lr_commit(curve, r_be, out, out + 32));
   ZKN_CHECK(lr_challenge(curve, Pub, out, out + 32, msg, len, hm_be));
-  ZKN_CHECK(lr_response(curve, prv, r_be, hm_be, out + 64));
+  ZKN_CHECK(lr_response(curve, prv, r_be, hm_be, wide, out + 64));
+
+end: __attribute__((unused))
+  explicit_bzero(wide, 64);
+  explicit_bzero(r_be, sizeof(r_be));
+  return error;
+}
+
+int EddsaPoseidon_Sign_final(zkn_edcurve_t *curve, uint8_t *prv, zkn_edpoint_t *Pub, uint8_t *msg, size_t len, uint8_t *out)
+{
+  ZKN_ERROR_INIT();
+  uint8_t wide[64]; /* p, then the 512-bit nonce hash */
+
+  error = lr_check_msg(curve, msg, len, wide);
+  if (error != ZKN_OK)
+  {
+    return error;
+  }
+
+  ZKN_CHECK(lr_check_pub(curve, prv, Pub));
+  ZKN_CHECK(lr_sign_steps(curve, prv, Pub, msg, len, out, wide));
 
 end: __attribute__((unused))
   explicit_bzero(wide, sizeof(wide));
-  explicit_bzero(r_be, sizeof(r_be));
+  return error;
+}
+
+/* Sign with the public key derived here, from prv, once.
+ *
+ * zkn_prv2pub() followed by EddsaPoseidon_Sign_final() computes the public
+ * key twice: in the caller, and again in the check that guards the signer
+ * against a caller-supplied Pub that is not the key's (the "double public
+ * key" oracle: r does not depend on Pub, the challenge does). With no Pub
+ * coming in there is nothing to forge and nothing to compare: two fixed-base
+ * multiplications instead of three, two inversions instead of five. Same
+ * signature, byte for byte.
+ *
+ * What goes with the second derivation: a fault in the single one is not
+ * caught here. Neither entry point catches a fault in R or in the hash. */
+int EddsaPoseidon_Sign(zkn_edcurve_t *curve, uint8_t *prv, uint8_t *msg, size_t len, uint8_t *out)
+{
+  ZKN_ERROR_INIT();
+  uint8_t wide[64]; /* p, then the 512-bit nonce hash */
+  zkn_edpoint_t Pub;
+  bool pub_alloc = false;
+
+  error = lr_check_msg(curve, msg, len, wide);
+  if (error != ZKN_OK)
+  {
+    return error;
+  }
+
+  ZKN_CHECK(tEdwards_alloc(curve, &Pub));
+  pub_alloc = true;
+  ZKN_CHECK(zkn_prv2pub(curve, prv, &Pub)); /* normalized, Montgomery */
+  ZKN_CHECK(lr_sign_steps(curve, prv, &Pub, msg, len, out, wide));
+
+end: __attribute__((unused))
+  explicit_bzero(wide, sizeof(wide));
+  if (error != ZKN_OK && pub_alloc)
+  {
+    (void)tEdwards_destroy(curve, &Pub); /* the challenge step destroys it otherwise */
+  }
   return error;
 }
 
@@ -448,19 +531,34 @@ int EddsaPoseidon_Sign_final(zkn_edcurve_t *curve, uint8_t *prv, zkn_edpoint_t *
   for (size_t i = 0; i < 64; i++)
     sbuff[i] = rbuff[63 - i]; // 512-bit BE: sbuff[0..32]=hi, sbuff[32..64]=lo
 
-  /* l = BabyJubjub subgroup order */
-  static const uint8_t order_l[32] = {
-      0x06, 0x0c, 0x89, 0xce, 0x5c, 0x26, 0x34, 0x05, 0x37, 0x0a, 0x08, 0xb6, 0xd0, 0x30, 0x2b, 0x0b,
-      0xab, 0x3e, 0xed, 0xb8, 0x39, 0x20, 0xee, 0x0a, 0x67, 0x72, 0x97, 0xdc, 0x39, 0x21, 0x26, 0xf1};
-  /* 2^256 mod l (precomputed) */
-  static const uint8_t two256_mod_l[32] = {
-      0x01, 0xf1, 0x64, 0x24, 0xe1, 0xbb, 0x77, 0x24, 0xf8, 0x5a, 0x92, 0x01, 0xd8, 0x18, 0xf0, 0x15,
-      0xe7, 0xac, 0xff, 0xc6, 0xa0, 0x98, 0xf2, 0x4b, 0x07, 0x33, 0x15, 0xde, 0xa0, 0x8f, 0x9c, 0x76};
+  /* l = subgroup order of the signing curve.
+   *
+   * It used to be the BabyJubjub order, hard-coded, for every curve. On
+   * Bandersnatch r and S were then reduced modulo the order of another group,
+   * and the signature did not satisfy [S]B = R + [8h]A.
+   *
+   * curve->order is released with the work variables before S is computed
+   * (tEdwards_Curve_partial_destroy), hence the byte copy. */
+  uint8_t order_l[32];
+  ZKN_CHECK(zkn_bn_export(curve->order, order_l, 32));
+  /* 2^256 mod l, from 2^256 - l: congruent to 2^256, and it fits the 256-bit
+   * bignum. `scalar` is free until r is exported. */
+  {
+    unsigned carry = 1;
+    for (size_t i = 32; i-- > 0;)
+    {
+      carry += (uint8_t)~order_l[i];
+      scalar[i] = (uint8_t)carry;
+      carry >>= 8;
+    }
+  }
 
   zkn_bn_t bn_l, bn_c, bn_hi, bn_lo;
   ZKN_CHECK(zkn_bn_alloc_init(&bn_l, 32, order_l, 32));
-  ZKN_CHECK(zkn_bn_alloc_init(&bn_c, 32, two256_mod_l, 32));
-  ZKN_CHECK(zkn_bn_alloc_init(&bn_hi, 32, sbuff, 32));        /* hi (BE) */
+  ZKN_CHECK(zkn_bn_alloc_init(&bn_hi, 32, scalar, 32));       /* 2^256 - l */
+  ZKN_CHECK(zkn_bn_alloc(&bn_c, 32));
+  ZKN_CHECK(zkn_bn_reduce(bn_c, bn_hi, bn_l));                /* 2^256 mod l */
+  ZKN_CHECK(zkn_bn_init(bn_hi, sbuff, 32));                   /* hi (BE) */
   ZKN_CHECK(zkn_bn_alloc_init(&bn_lo, 32, sbuff + 32, 32));   /* lo (BE) */
 
   ZKN_CHECK(zkn_bn_alloc(&red_r, 32));

@@ -12,10 +12,91 @@
 #include "cx.h"
 #include "zkn_aes_gcm.h"
 
-/* The LNS cxng (Nano S, API_LEVEL_LNS) ships no cx_aes_gcm_*. TARGET_NANOS
- * comes from bolos_target.h, hence the test after os.h. Nothing below is
- * referenced by a FROST=0 build. */
-#if !defined(TARGET_NANOS)
+#if defined(ZKN_AES_GCM_OVER_CX_AES)
+
+/* The LNS cxng (Nano S, API_LEVEL_LNS) ships no cx_aes_gcm_*, only the AES
+ * block primitive. Same three entry points, same argument checks and limits
+ * as the cx_aes_gcm_* versions below: the block cipher is cx_aes_enc_block,
+ * the mode comes from zkn_gcm_ct.c. */
+#include "zkn_gcm_ct.h"
+
+#define ZKN_GCM_MAX_LEN 128 /* the scratch size of the cx_aes_gcm_* versions */
+
+static int zkn_gcm_cx_block(void *ctx, const uint8_t in[16], uint8_t out[16])
+{
+    return cx_aes_enc_block((const cx_aes_key_t *)ctx, in, out) == CX_OK ? 0 : -1;
+}
+
+static int zkn_gcm_cx(const uint8_t *key32,
+                      const uint8_t *iv, size_t iv_len,
+                      const uint8_t *aad, size_t aad_len,
+                      const uint8_t *in, size_t in_len,
+                      uint8_t *out, uint8_t *tag16, int encrypt)
+{
+    cx_aes_key_t key;
+    int rc = -1;
+
+    if (cx_aes_init_key_no_throw(key32, 32, &key) == CX_OK)
+        rc = zkn_gcm_ct_crypt(zkn_gcm_cx_block, &key, iv, iv_len, aad, aad_len,
+                              in, in_len, out, tag16, encrypt);
+    explicit_bzero(&key, sizeof(key));
+    return rc;
+}
+
+int zkn_aes256_gcm_encrypt(const uint8_t *key32,
+                           const uint8_t *iv16,
+                           const uint8_t *plaintext, size_t plaintext_len,
+                           uint8_t *ciphertext,
+                           uint8_t *tag16)
+{
+    if (!key32 || !iv16 || !tag16) return -1;
+    if (plaintext_len > ZKN_GCM_MAX_LEN) return -1;
+    if (plaintext_len && (!plaintext || !ciphertext)) return -1;
+
+    return zkn_gcm_cx(key32, iv16, 16, NULL, 0, plaintext, plaintext_len, ciphertext, tag16, 1);
+}
+
+int zkn_aes256_gcm_encrypt_aad(const uint8_t *key32,
+                               const uint8_t *nonce, size_t nonce_len,
+                               const uint8_t *aad, size_t aad_len,
+                               const uint8_t *plaintext, size_t plaintext_len,
+                               uint8_t *ciphertext,
+                               uint8_t *tag16)
+{
+    if (!key32 || !nonce || !tag16 || nonce_len == 0) return -1;
+    if (aad_len && !aad) return -1;
+    if (plaintext_len > ZKN_GCM_MAX_LEN) return -1;
+    if (plaintext_len && (!plaintext || !ciphertext)) return -1;
+
+    return zkn_gcm_cx(key32, nonce, nonce_len, aad, aad_len,
+                      plaintext, plaintext_len, ciphertext, tag16, 1);
+}
+
+// Returns 0 if the tag verifies, -1 otherwise (plaintext zeroed on failure).
+int zkn_aes256_gcm_decrypt_aad(const uint8_t *key32,
+                               const uint8_t *nonce, size_t nonce_len,
+                               const uint8_t *aad, size_t aad_len,
+                               const uint8_t *ciphertext, size_t ciphertext_len,
+                               const uint8_t *tag16,
+                               uint8_t *plaintext)
+{
+    uint8_t tag[16];
+    int rc;
+
+    if (!key32 || !nonce || !tag16 || nonce_len == 0) return -1;
+    if (aad_len && !aad) return -1;
+    if (ciphertext_len > ZKN_GCM_MAX_LEN) return -1;
+    if (ciphertext_len && (!ciphertext || !plaintext)) return -1;
+
+    rc = zkn_gcm_cx(key32, nonce, nonce_len, aad, aad_len,
+                    ciphertext, ciphertext_len, plaintext, tag, 0);
+    if (rc == 0 && zkn_gcm_ct_tag_diff(tag, tag16) != 0) rc = -1;
+    if (rc != 0 && plaintext && ciphertext_len) explicit_bzero(plaintext, ciphertext_len);
+    explicit_bzero(tag, sizeof(tag));
+    return rc;
+}
+
+#else /* cx_aes_gcm_* from the SDK */
 
 int zkn_aes256_gcm_encrypt(const uint8_t *key32,
                            const uint8_t *iv16,
@@ -128,5 +209,5 @@ out:
     return rc;
 }
 
-#endif /* !TARGET_NANOS */
+#endif /* ZKN_AES_GCM_OVER_CX_AES */
 #endif /* !ZKN_HOST_BUILD */

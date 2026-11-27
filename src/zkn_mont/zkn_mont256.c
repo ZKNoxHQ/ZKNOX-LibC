@@ -53,6 +53,16 @@ static void ct_final_sub(zkn_limb_t r[N],
 
 #if !defined(ZKN_MONT256_ASM)
 
+/* On Thumb-1 cores (ARMv6-M, the original Nano S) the multiplication comes
+ * from zkn_mont256_armv6m.S: same algorithm, same output, 0.34 to 0.56 of the
+ * cycles depending on the multiplier of the core (figures and method in
+ * tools/mont256_armv6m_check.py). ZKN_MONT256_NO_ASM keeps the C version
+ * below. */
+#if defined(__ARM_ARCH_ISA_THUMB) && (__ARM_ARCH_ISA_THUMB == 1) && !defined(ZKN_MONT256_NO_ASM)
+#define ZKN_MONT256_MUL_ARMV6M 1
+#endif
+
+#if !defined(ZKN_MONT256_MUL_ARMV6M)
 void zkn_mul_mont_256(zkn_fe256_t r,
                       const zkn_fe256_t a,
                       const zkn_fe256_t b,
@@ -94,6 +104,7 @@ void zkn_mul_mont_256(zkn_fe256_t r,
 
     ct_final_sub(r, t, p);
 }
+#endif /* !ZKN_MONT256_MUL_ARMV6M */
 
 void zkn_sqr_mont_256(zkn_fe256_t r,
                       const zkn_fe256_t a,
@@ -150,10 +161,19 @@ void zkn_from_mont_256(zkn_fe256_t r,
                        const zkn_fe256_t p,
                        zkn_limb_t n0)
 {
+#if defined(ZKN_MONT256_MUL_ARMV6M)
+    /* a.R^-1 is the Montgomery product of a and 1: the same value as the
+     * reduction below, for every a, through the assembly. On these cores the
+     * C reduction builds its limb products with __aeabi_lmul, which branches
+     * on a carry of its operands. */
+    static const zkn_fe256_t one = {1, 0, 0, 0, 0, 0, 0, 0};
+    zkn_mul_mont_256(r, a, one, p, n0);
+#else
     zkn_wide256_t wide;
     memset(wide, 0, sizeof(wide));
     memcpy(wide, a, N * sizeof(zkn_limb_t));
     zkn_redc_mont_256(r, wide, p, n0);
+#endif
 }
 
 #endif /* !ZKN_MONT256_ASM */

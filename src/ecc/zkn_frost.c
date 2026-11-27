@@ -17,6 +17,15 @@
 #include "zkn_rfc9591frost.h"
 #include "zkn_frost.h"
 
+/* Low-RAM builds keep the steps of a signature in separate frames: these
+ * helpers must not be folded back into their caller. Expands to nothing in
+ * standard builds. */
+#ifdef ZKN_LOW_RAM
+#define ZKN_FROST_NOINLINE __attribute__((noinline))
+#else
+#define ZKN_FROST_NOINLINE
+#endif
+
 /* Pack the group public key the way H1 (binding factors) expects it:
  * y in big-endian, parity bit of x folded into the top bit (applied once).
  * Single source of truth, shared by zkn_partial_sig and the verify helpers. */
@@ -156,7 +165,7 @@ static int zkn_frost_validate_commitment_list(zkn_edcurve_t *curve, const uint8_
 /* RFC 9591 §5.2: "each participant MUST ensure that its identifier and
  * commitments (from the first round) appear in commitment_list". Recompute
  * (d·G, e·G) — fixed base, constant time — and compare with the entry. */
-static int zkn_frost_check_own_commitment(zkn_edcurve_t *curve, const uint8_t *hiding_nonce,
+static ZKN_FROST_NOINLINE int zkn_frost_check_own_commitment(zkn_edcurve_t *curve, const uint8_t *hiding_nonce,
                                           const uint8_t *binding_nonce, const uint8_t *entry)
 {
   ZKN_ERROR_INIT();
@@ -543,6 +552,100 @@ static inline void zkn_serialize_scalar_for_hash(const uint8_t *scalar_be, size_
   }
 }
 
+#if defined(ZKN_LOW_RAM) && defined(ZKN_BN_BACKEND_SW)
+/* ── Low-RAM zkn_compute_binding_factors (software bignums) ─────────────
+ * Same hashes, same bytes absorbed in the same order as the standard
+ * version below. The two prefix hashes and each H1 run in their own frame,
+ * so a BLAKE state never sits under another one. */
+
+/* out_le = SerializeScalar(H4(msg)) */
+static ZKN_FROST_NOINLINE int lr_bf_msg_hash(zkn_edcurve_t *curve, uint8_t *msg, size_t msglen,
+                                             uint8_t out_le[32])
+{
+  ZKN_ERROR_INIT();
+  zkn_bn_t h;
+  uint8_t be[32];
+
+  ZKN_CHECK(zkn_bn_alloc(&h, 32));
+  ZKN_CHECK(Babyfrost_H4(msg, msglen, curve->order, h));
+  ZKN_CHECK(zkn_bn_export(h, be, 32));
+  zkn_serialize_scalar_for_hash(be, 32, out_le);
+  ZKN_CHECK(zkn_bn_destroy(&h));
+
+  ZKN_ERROR_CLOSE();
+}
+
+/* out_le = SerializeScalar(H5(encode_group_commitment_list(commitment_list))) */
+static ZKN_FROST_NOINLINE int lr_bf_commit_hash(zkn_edcurve_t *curve, uint8_t *commitment_list,
+                                                size_t len, uint8_t out_le[32])
+{
+  ZKN_ERROR_INIT();
+  zkn_bn_t h;
+  uint8_t be[32];
+
+  ZKN_CHECK(zkn_bn_alloc(&h, 32));
+  ZKN_CHECK(zkn_encode_group_commitmentHash(curve, commitment_list, len, h));
+  ZKN_CHECK(zkn_bn_export(h, be, 32));
+  zkn_serialize_scalar_for_hash(be, 32, out_le);
+  ZKN_CHECK(zkn_bn_destroy(&h));
+
+  ZKN_ERROR_CLOSE();
+}
+
+/* out_be = H1(gpk || msg_hash || commit_hash || SerializeScalar(id)) */
+static ZKN_FROST_NOINLINE int lr_bf_one(zkn_edcurve_t *curve, const uint8_t gpk_le[32],
+                                        const uint8_t msg_hash_le[32],
+                                        const uint8_t commit_hash_le[32],
+                                        const uint8_t *id_be, uint8_t *out_be)
+{
+  ZKN_ERROR_INIT();
+  zkn_blake2b_t state;
+  zkn_bn_t bindingFactor;
+  uint8_t id_le[32];
+
+  ZKN_CHECK(zkn_bn_alloc(&bindingFactor, 32));
+  ZKN_CHECK(zkn_frost_H1_init((zkn_hash_t *)&state));
+  ZKN_CHECK(zkn_frost_hash_update((zkn_hash_t *)&state, (uint8_t *)gpk_le, 32));
+  ZKN_CHECK(zkn_frost_hash_update((zkn_hash_t *)&state, (uint8_t *)msg_hash_le, 32));
+  ZKN_CHECK(zkn_frost_hash_update((zkn_hash_t *)&state, (uint8_t *)commit_hash_le, 32));
+  zkn_serialize_scalar_for_hash(id_be, 32, id_le);
+  ZKN_CHECK(zkn_frost_hash_update((zkn_hash_t *)&state, id_le, 32));
+  ZKN_CHECK(zkn_frost_hash_final((zkn_hash_t *)&state, curve->order, bindingFactor));
+  ZKN_CHECK(zkn_bn_export(bindingFactor, out_be, 32));
+  ZKN_CHECK(zkn_bn_destroy(&bindingFactor));
+
+  ZKN_ERROR_CLOSE();
+}
+
+int zkn_compute_binding_factors(zkn_edcurve_t *curve,
+                                uint8_t *group_public_key, // Packed point (1 field element)
+                                uint8_t *commitment_list,
+                                size_t len,
+                                uint8_t *msg,
+                                size_t msglen,
+                                uint8_t *binding_factors)
+{
+  ZKN_ERROR_INIT();
+  uint8_t gpk_le[32], msg_hash_le[32], commit_hash_le[32];
+
+  /* Entries are five 32-byte fields: the only layout the callers accept. */
+  if (curve->fieldsize8 != 32) return ZKN_ERR_INVALID_PARAM;
+
+  zkn_serialize_scalar_for_hash(group_public_key, 32, gpk_le);
+  ZKN_CHECK(lr_bf_msg_hash(curve, msg, msglen, msg_hash_le));
+  ZKN_CHECK(lr_bf_commit_hash(curve, commitment_list, len, commit_hash_le));
+
+  for (size_t i = 0; i < len; i++)
+  {
+    ZKN_CHECK(lr_bf_one(curve, gpk_le, msg_hash_le, commit_hash_le,
+                        commitment_list + 5 * 32 * i, binding_factors + 32 * i));
+  }
+
+  ZKN_ERROR_CLOSE();
+}
+
+#else /* standard implementation */
+
 // Compute binding factors for FROST (section 4.4 of RFC 9591)
 // Inputs and outputs are BE
 int zkn_compute_binding_factors(zkn_edcurve_t *curve,
@@ -619,6 +722,8 @@ int zkn_compute_binding_factors(zkn_edcurve_t *curve,
   return 0;
 }
 
+#endif /* ZKN_LOW_RAM && ZKN_BN_BACKEND_SW */
+
 int zkn_participants_from_commitment_list(zkn_edcurve_t *curve, uint8_t *commitment_list, size_t len, uint8_t *ids)
 {
   ZKN_ERROR_INIT();
@@ -694,6 +799,208 @@ int compute_challenge(zkn_edcurve_t *curve, zkn_edpoint_t *group_commitment, uin
 
   ZKN_ERROR_CLOSE();
 }
+
+#if defined(ZKN_LOW_RAM) && defined(ZKN_BN_BACKEND_SW)
+/* ══════════════════════════════════════════════════════════════════════
+ *  Low-RAM zkn_partial_sig (software bignums)
+ *
+ *  Same checks in the same order and the same signature share as the
+ *  standard implementation further down. Software bignums live in the
+ *  caller's frame, so the standard function keeps the identifiers, the
+ *  group commitment, the challenge and the eight scalars of the final sum
+ *  alive together. Here each step has its own frame and hands 32 bytes to
+ *  the next one:
+ *
+ *      own commitment   (d.G, e.G) match the entry of the list
+ *      lambda           Lagrange coefficient over the listed quorum
+ *      binding factors  rho_j = H1(...)
+ *      challenge        c = H(R, A, msg), R the group commitment
+ *      response         z = d + e.rho_i + lambda.sk.c mod order
+ * ══════════════════════════════════════════════════════════════════════ */
+
+static ZKN_FROST_NOINLINE int lr_ps_lambda(zkn_edcurve_t *curve, uint8_t *commitment_list,
+                                           size_t len, size_t bf_idx, uint8_t lam_be[32])
+{
+  ZKN_ERROR_INIT();
+  zkn_bn_t ids[ZKN_FROST_MAX_SIGNERS];
+  zkn_bn_t lam;
+
+  ZKN_CHECK(zkn_frost_ids_from_list(commitment_list, len, ids));
+  ZKN_CHECK(zkn_bn_alloc(&lam, 32));
+  ZKN_CHECK(zkn_frost_interpolate(ids, len, ids[bf_idx], curve->order, lam));
+  ZKN_CHECK(zkn_bn_export(lam, lam_be, 32));
+  ZKN_CHECK(zkn_bn_destroy(&lam));
+  for (size_t i = 0; i < len; i++) ZKN_CHECK(zkn_bn_destroy(&ids[i]));
+
+  ZKN_ERROR_CLOSE();
+}
+
+/* h_be = H(R, A, msg) as a canonical field element. compute_challenge
+ * partial-destroys the curve: nothing after this step may use the point
+ * arithmetic or curve->order. */
+static ZKN_FROST_NOINLINE int lr_ps_challenge(zkn_edcurve_t *curve, uint8_t *commitment_list,
+                                              uint8_t *binding_factors, size_t len,
+                                              uint8_t *groupkey_be, uint8_t *msg_le,
+                                              uint8_t h_be[32])
+{
+  ZKN_ERROR_INIT();
+  zkn_edpoint_t group_commitment;
+  zkn_bn_t H;
+
+  ZKN_CHECK(zkn_bn_alloc(&H, 32));
+  ZKN_CHECK(tEdwards_alloc(curve, &group_commitment));
+  ZKN_CHECK(zkn_compute_group_commitment(curve, commitment_list, binding_factors, len, &group_commitment));
+  ZKN_CHECK(compute_challenge(curve, &group_commitment, groupkey_be, msg_le, 32, H));
+  ZKN_CHECK(zkn_bn_export(H, h_be, 32));
+  ZKN_CHECK(zkn_bn_destroy(&H));
+
+  ZKN_ERROR_CLOSE();
+}
+
+/* sig = hidingNonce + bindingNonce * bindingFactor + lambda_i * sk_i * challenge  (mod order) */
+static ZKN_FROST_NOINLINE int lr_ps_response(const uint8_t order[32], const uint8_t h_be[32],
+                                             const uint8_t *hiding_nonce, const uint8_t *binding_nonce,
+                                             const uint8_t lam_be[32], const uint8_t *secret_key_be,
+                                             const uint8_t *bf_be, uint8_t *sig)
+{
+  ZKN_ERROR_INIT();
+  zkn_bn_t H;
+  zkn_bn_t bn_challenge;
+  zkn_bn_t bn_order;
+  zkn_bn_t bn_hidingNonce;
+  zkn_bn_t bn_bindingNonce;
+  zkn_bn_t bnlambda_i;
+  zkn_bn_t bn_sk;
+  zkn_bn_t temp;
+  zkn_bn_t bn_bindingfactor1;
+
+  ZKN_CHECK(zkn_bn_alloc_init(&H, 32, h_be, 32));
+  ZKN_CHECK(zkn_bn_alloc(&bn_challenge, 32));
+  ZKN_CHECK(zkn_bn_alloc_init(&bn_order, 32, order, 32));
+
+  ZKN_CHECK(zkn_bn_reduce(bn_challenge, H, bn_order));
+
+  ZKN_CHECK(zkn_bn_alloc_init(&bn_hidingNonce, 32, hiding_nonce, 32));
+  ZKN_CHECK(zkn_bn_alloc_init(&bn_bindingNonce, 32, binding_nonce, 32));
+  ZKN_CHECK(zkn_bn_alloc_init(&bnlambda_i, 32, lam_be, 32));
+  ZKN_CHECK(zkn_bn_alloc_init(&bn_sk, 32, secret_key_be, 32));
+  ZKN_CHECK(zkn_bn_alloc_init(&bn_bindingfactor1, 32, bf_be, 32));
+
+  ZKN_CHECK(zkn_bn_alloc(&temp, 32));
+
+  ZKN_CHECK(zkn_bn_mod_mul(temp, bn_bindingNonce, bn_bindingfactor1, bn_order)); //(bindingNonce * bindingFactor)
+
+  ZKN_CHECK(zkn_bn_mod_mul(bn_bindingNonce, bnlambda_i, bn_sk, bn_order));        // lambda_i * sk_i
+  ZKN_CHECK(zkn_bn_mod_mul(bnlambda_i, bn_bindingNonce, bn_challenge, bn_order)); //(lambda_i * sk_i * challenge)
+
+  ZKN_CHECK(zkn_bn_mod_add(bn_bindingfactor1, temp, bnlambda_i, bn_order));     // prod=(bindingNonce * bindingFactor)+(lambda_i * sk_i * challenge)
+  ZKN_CHECK(zkn_bn_mod_add(temp, bn_bindingfactor1, bn_hidingNonce, bn_order)); // hidingNonce + prod
+  ZKN_CHECK(zkn_bn_reduce(H, temp, bn_order));
+
+  ZKN_CHECK(zkn_bn_export(H, sig, 32));
+
+end: __attribute__((unused))
+  /* SW bignums are stack arrays: wipe the ones that held secrets. */
+  explicit_bzero(bn_sk, sizeof(bn_sk));
+  explicit_bzero(bn_hidingNonce, sizeof(bn_hidingNonce));
+  explicit_bzero(bn_bindingNonce, sizeof(bn_bindingNonce));
+  explicit_bzero(bnlambda_i, sizeof(bnlambda_i));
+  explicit_bzero(temp, sizeof(temp));
+  explicit_bzero(bn_bindingfactor1, sizeof(bn_bindingfactor1));
+  return error;
+}
+
+int zkn_partial_sig(
+    zkn_edcurve_t *curve,
+    size_t identifier,
+    uint8_t *secret_key_be,
+    uint8_t *groupkey_be,
+    uint8_t *hiding_nonce,
+    uint8_t *binding_nonce,
+    uint8_t *commitment_list,
+    size_t len,
+    uint8_t *msg_le,
+    size_t msglen,
+    uint8_t *lambda_i,
+    uint8_t *sig)
+{
+  ZKN_ERROR_INIT();
+
+  uint8_t binding_factors[32 * ZKN_FROST_MAX_SIGNERS];
+  uint8_t groupkey_compressed[32];
+  uint8_t order[32];
+  uint8_t lam_be[32];
+  uint8_t h_be[32];
+  size_t bf_idx = 0;
+
+  /* Argument shape. Nothing has been computed yet, so these early returns
+   * leave the nonces untouched. */
+  if (curve == NULL || secret_key_be == NULL || groupkey_be == NULL || hiding_nonce == NULL ||
+      binding_nonce == NULL || commitment_list == NULL || msg_le == NULL || sig == NULL)
+    return ZKN_ERR_INVALID_PARAM;
+  /* zkn_compute_binding_factors writes len*32 bytes into binding_factors. */
+  if (len == 0 || len > ZKN_FROST_MAX_SIGNERS) return ZKN_ERR_INVALID_PARAM;
+  if (msglen != 32) return ZKN_WRONG_LENGTH;
+
+  /* From here on the nonces are CONSUMED: they are wiped on every exit path
+   * (see `end:`), as in the standard implementation. */
+
+  ZKN_CHECK(zkn_bn_export(curve->order, order, 32));
+
+  /* An all-zero nonce means the buffer was already consumed. Signing with
+   * d = e = 0 would return z = lambda * sk * c, i.e. the key share itself. */
+  if (zkn_frost_is_zero32(hiding_nonce) || zkn_frost_is_zero32(binding_nonce) ||
+      !zkn_frost_scalar_ok(order, hiding_nonce) || !zkn_frost_scalar_ok(order, binding_nonce) ||
+      !zkn_frost_scalar_ok(order, secret_key_be))
+  {
+    error = ZKN_ERR_INVALID_PARAM;
+    goto end;
+  }
+  if (!zkn_frost_msg_ok(msg_le))
+  {
+    error = ZKN_ERR_INVALID_PARAM;
+    goto end;
+  }
+
+  /* Untrusted coordinator input: identifiers + points. */
+  ZKN_CHECK(zkn_frost_validate_commitment_list(curve, commitment_list, len));
+  ZKN_CHECK(zkn_frost_index_of_id(commitment_list, len, identifier, &bf_idx));
+
+#ifndef ZKN_FROST_NO_OWN_COMMITMENT_CHECK
+  ZKN_CHECK(zkn_frost_check_own_commitment(curve, hiding_nonce, binding_nonce,
+                                           commitment_list + bf_idx * ZKN_FROST_ENTRY_LEN));
+#endif
+
+  /* lambda_i over the quorum actually listed (and hashed into the binding
+   * factors). A caller-supplied value must match it. */
+  ZKN_CHECK(lr_ps_lambda(curve, commitment_list, len, bf_idx, lam_be));
+  if (lambda_i != NULL && memcmp(lambda_i, lam_be, 32) != 0)
+  {
+    error = ZKN_ERR_INVALID_PARAM;
+    goto end;
+  }
+
+  zkn_frost_pack_groupkey(groupkey_be, groupkey_compressed); // y_be with x parity in top bit
+
+  ZKN_CHECK(zkn_compute_binding_factors(curve, groupkey_compressed, commitment_list, len, msg_le, msglen, binding_factors));
+  ZKN_CHECK(lr_ps_challenge(curve, commitment_list, binding_factors, len, groupkey_be, msg_le, h_be));
+  ZKN_CHECK(lr_ps_response(order, h_be, hiding_nonce, binding_nonce, lam_be, secret_key_be,
+                           binding_factors + bf_idx * 32, sig));
+
+end: __attribute__((unused))
+#ifndef ZKN_FROST_NO_NONCE_WIPE
+  /* Consume the nonces (single use). Define ZKN_FROST_NO_NONCE_WIPE only if
+   * the nonces live in storage that cannot be written with a plain store
+   * (e.g. NVM) — the caller then MUST erase them itself after this call. */
+  explicit_bzero(hiding_nonce, 32);
+  explicit_bzero(binding_nonce, 32);
+#endif
+  if (error)
+    explicit_bzero(sig, 32);
+  return error;
+}
+
+#else /* standard implementation */
 
 int zkn_partial_sig(
     zkn_edcurve_t *curve,
@@ -870,6 +1177,8 @@ end: __attribute__((unused))
 #endif
   return error;
 }
+
+#endif /* ZKN_LOW_RAM && ZKN_BN_BACKEND_SW */
 
 /* ───────────────────────── high-level FROST API ─────────────────────────
  * aggregate / verify_share / verify — mirror curves-lite/babyfrost.ts.

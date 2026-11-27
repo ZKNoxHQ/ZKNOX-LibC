@@ -109,6 +109,69 @@ static inline void store64_be(uint8_t *p, uint64_t v)
     (b)  = ROTR64((b) ^ (c), 11);                    \
 } while (0)
 
+#if defined(ZKN_LOW_RAM)
+/* Low-RAM compression. Same function as the standard version below; what
+ * changes is where the intermediate values live:
+ *   - the message words are read from the block when a round needs them,
+ *     instead of being unpacked into m[16] first (128 bytes);
+ *   - G is a real function. Inlined eight times per round, its 64-bit
+ *     temporaries are spilled into the frame of the compression function,
+ *     which costs more than the working vector itself on a 32-bit core
+ *     without 64-bit registers.
+ * Indices and rotations are public: timing does not depend on the data. */
+static const uint8_t blake512_gidx[8][4] = {
+    {0, 4,  8, 12}, {1, 5,  9, 13}, {2, 6, 10, 14}, {3, 7, 11, 15},   /* columns   */
+    {0, 5, 10, 15}, {1, 6, 11, 12}, {2, 7,  8, 13}, {3, 4,  9, 14}    /* diagonals */
+};
+
+/* x = m_j ^ c_k, y = m_k ^ c_j */
+static __attribute__((noinline)) void blake512_g(uint64_t *v, const uint8_t *idx,
+                                                 uint64_t x, uint64_t y)
+{
+    uint64_t a = v[idx[0]], b = v[idx[1]], c = v[idx[2]], d = v[idx[3]];
+    a += b + x;
+    d  = ROTR64(d ^ a, 32);
+    c += d;
+    b  = ROTR64(b ^ c, 25);
+    a += b + y;
+    d  = ROTR64(d ^ a, 16);
+    c += d;
+    b  = ROTR64(b ^ c, 11);
+    v[idx[0]] = a; v[idx[1]] = b; v[idx[2]] = c; v[idx[3]] = d;
+}
+
+static void blake512_compress(zkn_blake512_ctx_t *ctx, const uint8_t block[128])
+{
+    uint64_t v[16];
+    int r, i;
+
+    for (i = 0; i < 8; i++) v[i] = ctx->h[i];
+    for (i = 0; i < 4; i++) v[8 + i] = ctx->s[i] ^ blake512_cst[i];
+    for (i = 0; i < 4; i++) v[12 + i] = blake512_cst[4 + i];
+
+    // Counter injection (skipped for padding-only blocks via nullt flag)
+    if (!ctx->nullt) {
+        v[12] ^= ctx->t[0];
+        v[13] ^= ctx->t[0];
+        v[14] ^= ctx->t[1];
+        v[15] ^= ctx->t[1];
+    }
+
+    for (r = 0; r < 16; r++) {
+        const uint8_t *s = blake512_sigma[r % 10];
+        for (i = 0; i < 8; i++) {
+            const uint8_t j = s[2 * i], k = s[2 * i + 1];
+            blake512_g(v, blake512_gidx[i],
+                       load64_be(block + 8 * j) ^ blake512_cst[k],
+                       load64_be(block + 8 * k) ^ blake512_cst[j]);
+        }
+    }
+
+    for (i = 0; i < 8; i++) {
+        ctx->h[i] ^= ctx->s[i % 4] ^ v[i] ^ v[i + 8];
+    }
+}
+#else
 static void blake512_compress(zkn_blake512_ctx_t *ctx, const uint8_t block[128])
 {
     uint64_t v[16];
@@ -168,6 +231,7 @@ static void blake512_compress(zkn_blake512_ctx_t *ctx, const uint8_t block[128])
         ctx->h[i] ^= ctx->s[i % 4] ^ v[i] ^ v[i + 8];
     }
 }
+#endif /* ZKN_LOW_RAM */
 
 // =========================================================================
 // Public API

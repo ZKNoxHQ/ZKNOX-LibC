@@ -30,7 +30,7 @@ WITH_MPT   ?= 1
 DEBUG      ?= 0
 ZKNOX_DEBUG ?= 0    # 1 → compile ZKNOX_DEBUG-only code (VSS Feldman helpers, DKG)
 ZKN_FROST   ?= 0    # 1 → compile the threshold layer (frost, vss helpers, vartime scalarMul)
-ZKN_LOW_RAM ?= 0    # 1 → low-RAM variants (2-bit fixed-base window, MDS matrix read from const, phased signing)
+ZKN_LOW_RAM ?= 0    # 1 → low-RAM variants (2-bit fixed-base window, phased signing and threshold paths, compact BLAKE-512 and mod_mul)
 
 # ── Toolchain ─────────────────────────────────────────────────────────
 CC      ?= cc
@@ -66,6 +66,13 @@ ifeq ($(ZKN_LOW_RAM),1)
   CFLAGS += -DZKN_LOW_RAM
 endif
 
+# Fixed-base multiplication over the 16-entry table read from flash, without
+# the randomized copy in RAM (see tEdwards_4MSM_flash_table_ct).
+ZKN_FIXEDBASE_FLASH_TABLE ?= 0
+ifeq ($(ZKN_FIXEDBASE_FLASH_TABLE),1)
+  CFLAGS += -DZKN_FIXEDBASE_FLASH_TABLE
+endif
+
 # Position-independent code for the .so build
 LIBFLAGS := -fPIC
 
@@ -99,7 +106,7 @@ SRCS_SW_CRYPTO := src/sw_crypto/zkn_sha256_sw.c   \
                   src/sw_crypto/zkn_ed25519_sw.c  \
                   src/sw_crypto/zkn_aes_gcm_sw.c
 SRCS_KEYS_SW   := src/keys/zkn_ed25519_ecdh_sw.c
-SRCS_AES_SW    := src/aes/zkn_aes_gcm_sw_backend.c
+SRCS_AES_SW    := src/aes/zkn_aes_gcm_sw_backend.c src/aes/zkn_gcm_ct.c
 SRCS_KEYS_CX   := src/keys/zkn_ed25519_ecdh.c
 SRCS_AES_CX    := src/aes/zkn_aes_gcm.c src/aes/zkn_aes_ctr.c
 

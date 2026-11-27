@@ -217,6 +217,106 @@ int computeDealerShareForId(zkn_edcurve_t *curve, const uint8_t *coeffs,
 /* verifyFeldmanShare - check s(i)*G == Σ_j i^j * C_j.
  * Uses scalar multiplication, gated behind ZKNOX_DEBUG (see above). */
 #if defined(ZKNOX_DEBUG) || defined(ZKN_FROST)
+#if defined(ZKN_LOW_RAM) && defined(ZKN_BN_BACKEND_SW)
+/* ── Low-RAM verifyFeldmanShare (software bignums) ──────────────────────
+ * Same checks and same verdict as the standard version below, with the
+ * three steps in separate frames: the fixed-base multiplication of the
+ * share no longer runs on top of the four points of the standard frame. */
+
+#define ZKN_VSS_NOINLINE __attribute__((noinline))
+
+/* Every C_j is a canonical point of the prime-order subgroup. */
+static ZKN_VSS_NOINLINE int lr_feldman_check_commitments(zkn_edcurve_t *curve,
+                                                         const uint8_t *commitments, size_t threshold)
+{
+    ZKN_ERROR_INIT();
+    zkn_edpoint_t Cj;
+
+    ZKN_CHECK(tEdwards_alloc(curve, &Cj));
+    for (size_t j = 0; j < threshold; j++)
+    {
+        bool in_sg = false;
+        ZKN_CHECK(tEdwards_init_checked(curve, commitments + j * 64, commitments + j * 64 + 32, &Cj));
+        ZKN_CHECK(tEdwards_IsInSubgroup(curve, &Cj, &in_sg));
+        if (!in_sg) { error = ZKN_ERR_INVALID_PARAM; goto end; }
+    }
+    ZKN_CHECK(tEdwards_destroy(curve, &Cj));
+    ZKN_ERROR_CLOSE();
+}
+
+/* (lx, ly) = s(i) * G — the share is secret: fixed base, constant time. */
+static ZKN_VSS_NOINLINE int lr_feldman_lhs(zkn_edcurve_t *curve, const uint8_t *share,
+                                           uint8_t lx[32], uint8_t ly[32])
+{
+    ZKN_ERROR_INIT();
+    zkn_edpoint_t lhs;
+
+    ZKN_CHECK(tEdwards_alloc(curve, &lhs));
+    ZKN_CHECK(tEdwards_fixedBase_4MSM(curve, share, &lhs));
+    ZKN_CHECK(tEdwards_normalize(curve, &lhs));
+    ZKN_CHECK(tEdwards_export(curve, &lhs, lx, ly));
+    ZKN_CHECK(tEdwards_destroy(curve, &lhs));
+    ZKN_ERROR_CLOSE();
+}
+
+/* Σ i^j * C_j via Horner (rhs = C_{t-1}; for j=t-2..0: rhs = rhs*i + C_j),
+ * compared with the left-hand side. */
+static ZKN_VSS_NOINLINE int lr_feldman_rhs_matches(zkn_edcurve_t *curve, size_t id,
+                                                   const uint8_t *commitments, size_t threshold,
+                                                   const uint8_t lhs[64], bool *valid)
+{
+    ZKN_ERROR_INIT();
+    zkn_edpoint_t rhs, tmp, Cj;
+    zkn_bn_t x;
+    uint8_t idb[32], rx[32], ry[32];
+
+    ZKN_CHECK(zkn_bn_alloc(&x, 32));
+    ZKN_CHECK(zkn_bn_set_u32(x, (uint32_t)id));
+    ZKN_CHECK(zkn_bn_export(x, idb, 32));
+    ZKN_CHECK(zkn_bn_destroy(&x));
+
+    ZKN_CHECK(tEdwards_alloc(curve, &rhs));
+    ZKN_CHECK(tEdwards_alloc(curve, &tmp));
+    ZKN_CHECK(tEdwards_alloc(curve, &Cj));
+    ZKN_CHECK(tEdwards_init(curve, (uint8_t *)(commitments + (threshold - 1) * 64),
+                            (uint8_t *)(commitments + (threshold - 1) * 64 + 32), &rhs));
+    for (size_t j = threshold - 1; j-- > 0;)
+    {
+        ZKN_CHECK(tEdwards_scalarMul(curve, &rhs, idb, 32, &tmp)); // tmp = rhs*i
+        ZKN_CHECK(tEdwards_init(curve, (uint8_t *)(commitments + j * 64),
+                                (uint8_t *)(commitments + j * 64 + 32), &Cj));
+        ZKN_CHECK(tEdwards_add(curve, &tmp, &Cj, &rhs)); // rhs = tmp + C_j
+    }
+    ZKN_CHECK(tEdwards_normalize(curve, &rhs));
+    ZKN_CHECK(tEdwards_export(curve, &rhs, rx, ry));
+    *valid = (memcmp(lhs, rx, 32) == 0 && memcmp(lhs + 32, ry, 32) == 0);
+    ZKN_CHECK(tEdwards_destroy(curve, &rhs));
+    ZKN_CHECK(tEdwards_destroy(curve, &tmp));
+    ZKN_CHECK(tEdwards_destroy(curve, &Cj));
+    ZKN_ERROR_CLOSE();
+}
+
+int verifyFeldmanShare(zkn_edcurve_t *curve, size_t id, const uint8_t *share,
+                       const uint8_t *commitments, size_t threshold, bool *valid)
+{
+    ZKN_ERROR_INIT();
+    /* Left-hand side, x || y. Doubles as the scratch for the order: the
+     * fixed-base multiplication, the deepest step, runs under this frame. */
+    uint8_t lhs[64];
+    if (valid == NULL) return ZKN_ERR_INVALID_PARAM;
+    *valid = false;
+    if (!vss_id_ok(id)) return ZKN_ERR_INVALID_PARAM;
+    if (threshold == 0 || threshold > VSS_MAX_THRESHOLD) return ZKN_ERR_INVALID_PARAM;
+    ZKN_CHECK(zkn_bn_export(curve->order, lhs, 32));
+    if (!vss_be_lt(share, lhs, 32)) return ZKN_ERR_INVALID_PARAM;
+
+    ZKN_CHECK(lr_feldman_check_commitments(curve, commitments, threshold));
+    ZKN_CHECK(lr_feldman_lhs(curve, share, lhs, lhs + 32));
+    ZKN_CHECK(lr_feldman_rhs_matches(curve, id, commitments, threshold, lhs, valid));
+    ZKN_ERROR_CLOSE();
+}
+
+#else /* standard implementation */
 int verifyFeldmanShare(zkn_edcurve_t *curve, size_t id, const uint8_t *share,
                        const uint8_t *commitments, size_t threshold, bool *valid)
 {
@@ -276,6 +376,7 @@ int verifyFeldmanShare(zkn_edcurve_t *curve, size_t id, const uint8_t *share,
     ZKN_CHECK(tEdwards_destroy(curve, &Cj));
     ZKN_ERROR_CLOSE();
 }
+#endif /* ZKN_LOW_RAM && ZKN_BN_BACKEND_SW */
 #endif /* ZKNOX_DEBUG || ZKN_FROST */
 
 /* deriveInterpolatingValue - Lagrange coefficient at 0 for x_i over {ids}. */
