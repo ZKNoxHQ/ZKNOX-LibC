@@ -3,7 +3,8 @@
 ## ADR-001 — Poseidon (SW backend): optimized form, per-field Montgomery tables
 
 Date: 2026-11-25. Status: amended by ADR-002 (sparse rounds are optional, off by
-default). Version: v0.2.6.
+default) and by ADR-004 (the BLS12-381 table is the instance of that field).
+Version: v0.2.6.
 
 ### Context
 
@@ -44,6 +45,8 @@ not a hadeshash BLS12-381 parameter set, but signatures depend on it. The
 generator therefore emits a second table for Poseidon-5: the same integers,
 optimized and converted over that field. Outputs are unchanged. A proper
 BLS12-381 instance would be a new entry in `INSTANCES`.
+
+ADR-004 replaces that table by the instance of the field.
 
 ### Consequences
 
@@ -190,3 +193,81 @@ repeat the list, and nothing tied the entries together.
 * Looking for a configuration file of a fixed name with `__has_include`. A
   missing include path would build the defaults without a word; a named file
   that is not found stops the build.
+
+## ADR-004 — Bandersnatch: the Poseidon instance of the BLS12-381 scalar field, and a seed key of its own
+
+Date: 2026-11-27. Status: accepted.
+
+### Context
+
+EdDSA and FROST hash their challenge with Poseidon-5 over the base field of
+the curve. On Bandersnatch that field is the BLS12-381 scalar field, and both
+backends hashed there with the round constants and the matrix generated for
+BN254 (ADR-001, "The BLS12-381 table"). It is a function of this library
+only. The circuits of the BLS12-381 port verify signatures with the instance
+of the field, as hadeshash defines it and ZKNOX-Poseidons generates it.
+
+The keys module derived every Railgun key under one SLIP-0010 master,
+`"babyjubjub seed"`. An application that signs on both curves then used one
+secret as a private key on each.
+
+### Decision
+
+1. Poseidon-5 over the BLS12-381 scalar field is the instance 255/6/8/60:
+   the Grain generator of `generate_parameters_grain.sage` seeded with
+   (1, 0, 255, 6, 8, 60), round constants drawn again while not below the
+   modulus, Cauchy matrix from the same stream.
+2. Software backend: `tools/gen_poseidon_opt.py` generates one instance per
+   field, seeded with the bit length of the field, and
+   `POSEIDON_BLS12381_T6` is regenerated. The generator now runs the three
+   matrix checks of the script (`algorithm_1`, `algorithm_2`, `algorithm_3`)
+   and draws again when one refuses, as the script does.
+3. cx backend: `Poseidon_alloc_init` reads the modulus and takes the
+   instance of that field, its Grain seed, its rejection bound and its
+   matrix. The matrix of the BLS12-381 instance is a table in flash
+   (`gen_poseidon_opt.py --cx-matrix BLS12381:5`). A field without an
+   instance is refused, as the software backend refuses a field without a
+   table; over BLS12-381 only 5 inputs have one.
+4. Keys: `KEY_TYPE_SPENDING_BANDERSNATCH` derives on the spending path under
+   its own master, `HMAC-SHA512(key = "bandersnatch seed", data = seed)`.
+   SLIP-0010 names one master per curve. `spending_key_type` gives the key
+   type of a signing curve, and `derive_public_key` handles the new type.
+
+### Consequences
+
+* Signatures on Bandersnatch change: `S` depends on the hash. BN254 is
+  untouched: the seven BN254 tables are byte-identical, and so is the matrix
+  the cx backend reads for 5 inputs when the generator emits it.
+* The generator against other sources, for the 255-bit field: constants and
+  matrix equal those of hadeshash `poseidonperm_x5_255_3.sage` and
+  `poseidonperm_x5_255_5.sage`, and those of the reference generator of
+  ZKNOX-Poseidons for t = 3, 4, 5 and 6. The first matrix drawn passes the
+  three checks for every instance generated, BN254 t = 2 .. 8 and BLS12-381
+  t = 6; the checks refuse the identity and a matrix with an invariant line.
+* `make poseidon-diff` generates the BLS12-381 instance a third time, in
+  JavaScript, and first checks that generator against the constants and
+  matrices circomlibjs ships for BN254.
+* cx backend, round constants: a candidate is now compared with the whole
+  modulus where the code compared the top 64 bits. Over the seven BN254
+  streams no candidate falls between the two rules, so the BN254 constants
+  are the same.
+* The four BLS12-381 known answers of `test_poseidon_opt` and the two
+  Bandersnatch signatures of `test_lowram_vectors` are new. Each known
+  answer equals the reference permutation of ZKNOX-Poseidons, and the two
+  signatures satisfy `[S]B = R + [8h]A` with curve arithmetic and that
+  reference hash, written apart from the library.
+* `make test` passes its 29 suites in five configurations: default,
+  `ZKN_LOW_RAM=1`, the same with `ZKN_FIXEDBASE_FLASH_TABLE=0`, the same with
+  `ZKN_FIXEDBASE_SCALAR_BLINDING=0`, and the flash table with the blinding
+  without `ZKN_LOW_RAM`. The cx backend is checked in the application
+  (ZKNOX-HW-PRIVACY, ADR-013).
+* An application that linked 5 inputs over BLS12-381 keeps its flash: the
+  software table has the same 144 elements. The cx backend gains the 1152
+  bytes of the matrix.
+
+### Alternatives not retained
+
+* Keeping both functions over BLS12-381 behind a switch. Nothing verifies
+  the former one.
+* For the key, the BabyJubjub master and another path. One master per curve
+  is the rule of SLIP-0010.

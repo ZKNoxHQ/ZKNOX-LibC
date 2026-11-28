@@ -4,12 +4,15 @@ gen_poseidon_opt.py — generates the Poseidon tables of the SW backend:
     src/zkn_mont/zkn_poseidon_opt_tables.h
     src/zkn_mont/zkn_poseidon_opt_tables.c
 
-Parameter set: circomlib Poseidon, x^5 S-box, RF = 8, t = 2..8
-(Poseidon-1 .. Poseidon-7), generated for the BN254 scalar field.
+Parameter sets: Poseidon with the x^5 S-box and RF = 8, as hadeshash
+generate_parameters_grain.sage defines them for a prime field. One instance
+per field: the Grain LFSR is seeded with the bit length of the field (254
+for BN254, 255 for BLS12-381), t, RF and RP.
 
 Everything is derived from the parameters, with no input file:
   1. round constants and MDS matrix from the Grain LFSR (Poseidon paper,
-     hadeshash generate_parameters_grain.sage);
+     hadeshash generate_parameters_grain.sage), the matrix being the first
+     one that passes the three checks of that script;
   2. the round constants moved through the linear layer, so that a partial
      round adds one constant instead of t (same algorithm and same values as
      the C of circomlibjs tools/poseidon_optimize_constants.js);
@@ -28,15 +31,17 @@ circomlibjs.
 The choice is written in the generated files; SPARSE below sets the default.
 
 Two fields are emitted (INSTANCES below):
-  BN254     the circomlib instance, t = 2..8;
-  BLS12381  the same integers (constants and MDS generated for BN254)
-            evaluated over the BLS12-381 scalar field. This is what the
-            library computes when EdDSA / FROST run on Bandersnatch, whose
-            base field is passed as the Montgomery context. It is not a
-            hadeshash BLS12-381 parameter set. Only t = 6 (Poseidon-5), the
-            arity those callers use.
-Pushed constants and sparse matrices depend on the field (matrix inverses),
-hence one table per (field, arity).
+  BN254     254/t/8/RP, the circomlib instance, t = 2..8 (Poseidon-1 ..
+            Poseidon-7);
+  BLS12381  255/6/8/60, the instance of the BLS12-381 scalar field for
+            t = 6 (Poseidon-5): what EdDSA and FROST hash with on
+            Bandersnatch, whose base field that is. Same rules as the
+            255/3/8/57 and 255/5/8/60 parameter files of hadeshash, and the
+            instance ZKNOX-Poseidons generates for this field and this t.
+            Until this version the table held the BN254 integers evaluated
+            over the BLS12-381 field.
+Constants, matrices, pushed constants and sparse matrices depend on the
+field, hence one table per (field, arity).
 
 Usage, from the repository root:
   python3 tools/gen_poseidon_opt.py              rewrites the two files
@@ -45,6 +50,10 @@ Usage, from the repository root:
         DIR/poseidon_constants_opt.json (js/node_modules/circomlibjs/src)
   python3 tools/gen_poseidon_opt.py --kat        prints known answers
         (reference permutation) for tests/test_poseidon_opt.c
+  python3 tools/gen_poseidon_opt.py --cx-matrix BLS12381:5
+        prints the MDS matrix of an instance as the array the cx backend
+        reads (hash/zkn_poseidon_constants.c): 32 bytes big endian per
+        coefficient, row by row, not in Montgomery form
   --out DIR writes the two files to DIR instead of src/zkn_mont.
 After a change of --sparse, run `make test` and `make poseidon-diff`.
 
@@ -57,8 +66,9 @@ import sys
 P_BN254 = 0x30644E72E131A029B85045B68181585D2833E84879B9709143E1F593F0000001
 P_BLS12381 = 0x73EDA753299D7D483339D80809A1D80553BDA402FFFE5BFEFFFFFFFF00000001
 
-N_BITS = 254            # Grain parameters: those of the BN254 instance
 RF = 8
+# Partial rounds for a 254-bit and for a 255-bit field (Poseidon paper,
+# 128 bits of security with the margin): the same numbers.
 RP = {2: 56, 3: 57, 4: 56, 5: 60, 6: 60, 7: 63, 8: 64}
 R = 1 << 256
 
@@ -100,7 +110,7 @@ def mask_of(ts):
 
 # ── Grain LFSR ────────────────────────────────────────────────────────
 class Grain:
-    def __init__(self, t, rp):
+    def __init__(self, n_bits, t, rp):
         bits = []
 
         def push(value, width):
@@ -108,7 +118,7 @@ class Grain:
 
         push(1, 2)        # field: GF(p)
         push(0, 4)        # S-box: x^alpha
-        push(N_BITS, 12)
+        push(n_bits, 12)  # bit length of the field
         push(t, 12)
         push(RF, 10)
         push(rp, 10)
@@ -141,30 +151,35 @@ class Grain:
 _REFERENCE = {}
 
 
-def reference_constants(t):
-    """Round constants C[(RF+RP)*t] and MDS matrix M[t][t] of the BN254
-    instance: the content of circomlibjs poseidon_constants.json."""
-    if t in _REFERENCE:
-        return _REFERENCE[t]
-    p = P_BN254
+def reference_constants(q, t):
+    """Round constants C[(RF+RP)*t] and MDS matrix M[t][t] of the instance
+    of GF(q): what generate_parameters_grain.sage prints for
+    (1, 0, bits(q), t, RF, RP, q). For BN254 that is the content of
+    circomlibjs poseidon_constants.json."""
+    if (q, t) in _REFERENCE:
+        return _REFERENCE[(q, t)]
+    n_bits = q.bit_length()
     rp = RP[t]
-    g = Grain(t, rp)
+    g = Grain(n_bits, t, rp)
     c = []
     while len(c) < (RF + rp) * t:
-        v = g.integer(N_BITS)
-        if v < p:
+        v = g.integer(n_bits)
+        if v < q:
             c.append(v)
     # Cauchy matrix M[i][j] = 1 / (x_i + y_j), x and y drawn from the stream.
+    # The script draws again on a duplicate, on x_i + y_j = 0, and when one
+    # of its three checks refuses the matrix.
     while True:
-        r = [g.integer(N_BITS) % p for _ in range(2 * t)]
+        r = [g.integer(n_bits) % q for _ in range(2 * t)]
         if len(set(r)) != 2 * t:
             continue
         xs, ys = r[:t], r[t:]
-        if any((x + y) % p == 0 for x in xs for y in ys):
+        if any((x + y) % q == 0 for x in xs for y in ys):
             continue
-        break
-    m = [[pow(x + y, p - 2, p) for y in ys] for x in xs]
-    _REFERENCE[t] = (c, m)
+        m = [[pow(x + y, q - 2, q) for y in ys] for x in xs]
+        if matrix_is_secure(m, q):
+            break
+    _REFERENCE[(q, t)] = (c, m)
     return c, m
 
 
@@ -200,6 +215,196 @@ def mat_mul_vec(a, v, q):
 
 def transpose(a):
     return [list(col) for col in zip(*a)]
+
+
+# ── The three matrix checks of generate_parameters_grain.sage (s = 1) ──
+def _rref(rows, q):
+    m = [list(r) for r in rows]
+    piv = []
+    r = 0
+    for col in range(len(m[0]) if m else 0):
+        k = next((i for i in range(r, len(m)) if m[i][col] % q), None)
+        if k is None:
+            continue
+        m[r], m[k] = m[k], m[r]
+        inv = pow(m[r][col], q - 2, q)
+        m[r] = [x * inv % q for x in m[r]]
+        for i in range(len(m)):
+            if i != r and m[i][col]:
+                f = m[i][col]
+                m[i] = [(x - f * y) % q for x, y in zip(m[i], m[r])]
+        piv.append(col)
+        r += 1
+    return m[:r], piv
+
+
+def _rank(rows, q):
+    return len(_rref(rows, q)[1]) if rows else 0
+
+
+def _kernel(rows, n, q):
+    """Basis of the vectors v of GF(q)^n with rows . v = 0."""
+    m, piv = _rref(rows, q)
+    basis = []
+    for f in (col for col in range(n) if col not in piv):
+        v = [0] * n
+        v[f] = 1
+        for r, col in enumerate(piv):
+            v[col] = (-m[r][f]) % q
+        basis.append(v)
+    return basis
+
+
+def _mat_pow(a, e, q):
+    n = len(a)
+    r = [[int(i == j) for j in range(n)] for i in range(n)]
+    while e:
+        if e & 1:
+            r = mat_mul(r, a, q)
+        a = mat_mul(a, a, q)
+        e >>= 1
+    return r
+
+
+def _poly_mod(a, f, q):
+    a = list(a)
+    inv = pow(f[-1], q - 2, q)
+    while len(a) >= len(f):
+        c = a[-1] * inv % q
+        if c:
+            off = len(a) - len(f)
+            for i, y in enumerate(f):
+                a[off + i] = (a[off + i] - c * y) % q
+        a.pop()
+    while a and a[-1] == 0:
+        a.pop()
+    return a
+
+
+def _poly_mulmod(a, b, f, q):
+    if not a or not b:
+        return []
+    r = [0] * (len(a) + len(b) - 1)
+    for i, x in enumerate(a):
+        for j, y in enumerate(b):
+            r[i + j] = (r[i + j] + x * y) % q
+    return _poly_mod(r, f, q)
+
+
+def _poly_powmod(base, e, f, q):
+    r = [1]
+    base = _poly_mod(base, f, q)
+    while e:
+        if e & 1:
+            r = _poly_mulmod(r, base, f, q)
+        base = _poly_mulmod(base, base, f, q)
+        e >>= 1
+    return r
+
+
+def _poly_gcd(a, b, q):
+    a, b = list(a), list(b)
+    while b:
+        a, b = b, _poly_mod(a, b, q)
+    inv = pow(a[-1], q - 2, q) if a else 0
+    return [x * inv % q for x in a]
+
+
+def _char_poly(a, q):
+    """det(xI - a), coefficients from the constant term up (Faddeev-LeVerrier)."""
+    n = len(a)
+    c = [0] * n + [1]
+    m = [[0] * n for _ in range(n)]
+    for k in range(1, n + 1):
+        m = [[(sum(a[i][x] * m[x][j] for x in range(n)) + (c[n - k + 1] if i == j else 0)) % q
+              for j in range(n)] for i in range(n)]
+        am = mat_mul(a, m, q)
+        c[n - k] = (-sum(am[i][i] for i in range(n)) * pow(k, q - 2, q)) % q
+    return c
+
+
+def _roots(f, q):
+    """Roots in GF(q) of f: gcd with x^q - x, then equal-degree splitting."""
+    xq = _poly_powmod([0, 1], q, f, q)
+    xq += [0] * (2 - len(xq))
+    xq[1] = (xq[1] - 1) % q
+    while xq and xq[-1] == 0:
+        xq.pop()
+    found = []
+    stack = [_poly_gcd(f, xq, q) if xq else list(f)]
+    shift = 0
+    while stack:
+        h = stack.pop()
+        if len(h) <= 1:
+            continue
+        if len(h) == 2:
+            found.append((-h[0] * pow(h[1], q - 2, q)) % q)
+            continue
+        while True:
+            shift += 1                      # deterministic: x + 1, x + 2, ...
+            w = _poly_powmod([shift, 1], (q - 1) // 2, h, q)
+            w += [0] * (1 - len(w))
+            w[0] = (w[0] - 1) % q
+            while w and w[-1] == 0:
+                w.pop()
+            d = _poly_gcd(h, w, q) if w else []
+            if 1 < len(d) < len(h):
+                rest, rem = list(h), []
+                quo = [0] * (len(h) - len(d) + 1)
+                for i in range(len(quo) - 1, -1, -1):
+                    quo[i] = rest[i + len(d) - 1]
+                    for j, y in enumerate(d):
+                        rest[i + j] = (rest[i + j] - quo[i] * y) % q
+                assert not any(rest[:len(d) - 1]), rem
+                stack += [d, quo]
+                break
+    return found
+
+
+def _algorithm_1(m, q):
+    t = len(m)
+    powers = [_mat_pow(m, j + 1, q) for j in range(t + 1)]
+    for i in range(1, t):
+        mi = powers[i - 1]
+        if all(mi[a][b] == (mi[0][0] if a == b else 0) for a in range(t) for b in range(t)):
+            return False
+        # S: x_0 = 0 and (M^k x)_0 = 0 for k = 1 .. i - 1
+        cons = [[1] + [0] * (t - 1)] + [[0] + powers[k][0][1:] for k in range(i - 1)]
+        s_basis = _kernel(cons, t, q)
+        inter = []
+        for lam in _roots(_char_poly(mi, q), q):
+            shifted = [[(mi[a][b] - (lam if a == b else 0)) % q for b in range(t)] for a in range(t)]
+            inter += _kernel(shifted + cons, t, q)
+        if 1 <= _rank(inter, q) < t:
+            return False
+        for j in range(1, i + 1):
+            image = [mat_mul_vec(powers[j - 1], v, q) for v in s_basis]
+            if s_basis and all(not any(mat_mul_vec(cons, v, q)) for v in image):
+                return False
+    return True
+
+
+def _algorithm_2(m, q):
+    """The first unit vector generates the whole space under m."""
+    t = len(m)
+    v = [1] + [0] * (t - 1)
+    span = [v]
+    while True:
+        before = _rank(span, q)
+        v = mat_mul_vec(m, v, q)
+        span.append(v)
+        after = _rank(span, q)
+        if after == t:
+            return True
+        if after <= before:
+            return False
+
+
+def matrix_is_secure(m, q):
+    """algorithm_1, algorithm_2 and algorithm_3 of the script: no invariant
+    subspace trail through the partial rounds."""
+    return (_algorithm_1(m, q) and _algorithm_2(m, q)
+            and all(_algorithm_2(_mat_pow(m, r, q), q) for r in range(2, 4 * len(m) + 1)))
 
 
 # ── Optimized form (circomlibjs tools/poseidon_optimize_constants.js) ──
@@ -246,10 +451,10 @@ def calculate_ps(t, m, q, k):
 
 
 def optimized_constants(t, q, k):
-    """(C, S, M, P) over GF(q). C and M are those of circomlibjs
+    """(C, S, M, P) over GF(q). For BN254, C and M are those of circomlibjs
     poseidon_constants_opt.json; S (k rows of 2t - 1) and P are too when
     k = RP."""
-    c, m = reference_constants(t)
+    c, m = reference_constants(q, t)
     om = transpose(m)
     p, s = calculate_ps(t, om, q, k)
     return convert_constants(t, c, om, q), s, om, p
@@ -257,7 +462,7 @@ def optimized_constants(t, q, k):
 
 # ── The two permutations, used to check one against the other ─────────
 def poseidon_reference(t, inputs, q, init=0, nout=1):
-    c, m = reference_constants(t)
+    c, m = reference_constants(q, t)
     rp = RP[t]
     st = [init % q] + [x % q for x in inputs]
     for r in range(RF + rp):
@@ -345,8 +550,8 @@ def limbs(x, q, montgomery=True):
 NOTE = """\
  * GENERATED by tools/gen_poseidon_opt.py, do not edit.
  *
- * Poseidon tables of the SW backend (circomlib parameter set: x^5, RF = 8,
- * constants and MDS matrix from the Grain LFSR for the BN254 scalar field).
+ * Poseidon tables of the SW backend (x^5, RF = 8, constants and MDS matrix
+ * from the Grain LFSR, one instance per field as hadeshash defines them).
  * The round constants are moved through the linear layer: a partial round
  * adds one constant. The last k partial rounds of an arity may use sparse
  * matrices (k is chosen per arity when the tables are generated).
@@ -364,10 +569,10 @@ NOTE = """\
  *                          t - 1 column coefficients (the corner is MT[0])
  *
  * Fields:
- *     BN254     the circomlib instance, Poseidon-1 .. Poseidon-7.
- *     BLS12381  the same integers evaluated over the BLS12-381 scalar field:
- *               what EdDSA / FROST compute on Bandersnatch. Not a hadeshash
- *               BLS12-381 parameter set. Poseidon-5 only.
+ *     BN254     254/t/8/RP, the circomlib instance, Poseidon-1 .. Poseidon-7.
+ *     BLS12381  255/6/8/60, the instance of the BLS12-381 scalar field:
+ *               what EdDSA / FROST hash with on Bandersnatch. Poseidon-5
+ *               only.
 """
 
 
@@ -488,7 +693,7 @@ def check_against_circomlibjs(directory, tables):
     ref = load("poseidon_constants.json")
     opt = load("poseidon_constants_opt.json")
     for t in INSTANCES[0][2]:
-        c, m = reference_constants(t)
+        c, m = reference_constants(P_BN254, t)
         oc, os_, om, op = tables["BN254"][t]
         k = t - 2
         what = "C, M and pushed C"
@@ -527,6 +732,21 @@ def main(argv):
 
     if "--check" in argv:
         check_against_circomlibjs(argv[argv.index("--check") + 1], tables)
+
+    if "--cx-matrix" in argv:
+        name, n = argv[argv.index("--cx-matrix") + 1].split(":")
+        q = next(i[1] for i in INSTANCES if i[0] == name)
+        t = int(n) + 1
+        _, m = reference_constants(q, t)
+        print(f"/* {name} Poseidon-{t - 1} (t = {t}): MDS matrix, {t * t} coefficients of 32 bytes,")
+        print(" * big endian, row by row. tools/gen_poseidon_opt.py --cx-matrix "
+              f"{name}:{t - 1} */")
+        for row in m:
+            for x in row:
+                b = x.to_bytes(32, "big")
+                for off in (0, 16):
+                    print("    " + " ".join(f"0x{v:02x}," for v in b[off:off + 16]))
+        return
 
     if "--kat" in argv:
         for name, q, ts, _ in INSTANCES:

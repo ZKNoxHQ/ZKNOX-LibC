@@ -21,10 +21,12 @@
  * threshold rows, the unmodified library); the BabyJubjub rows of the first
  * three tables were also checked against circomlibjs (mulPointEscalar on
  * Base8, poseidon, signPoseidon). The two Bandersnatch signatures are those
- * of the library once r and S are reduced modulo the order of the signing
- * curve (main, pull request 4); they satisfy [S]B = R + [8h]A, which
- * test_security_regressions checks for both curves. The test must pass in
- * both configurations:
+ * of the library with r and S reduced modulo the order of the signing curve
+ * and the challenge h hashed with the Poseidon instance of the BLS12-381
+ * scalar field (255/6/8/60). They satisfy [S]B = R + [8h]A with curve
+ * arithmetic and a Poseidon written apart from the library, and
+ * test_security_regressions checks the same equation for both curves with
+ * the hash of the library. The test must pass in both configurations:
  *
  *     make test
  *     make test ZKN_LOW_RAM=1
@@ -190,9 +192,9 @@ static const struct {
     {2, 0x81, 0xa1,
      "00d0331eb40f4adcd9c8e61d3c0c6f05c45d745c66843f289e893782d4c35fef19deda39d945833672baa0c3fc4770535f54f03cd32b484daa4cfdc01960f6880302334c654e3bcf9edd9bc0f1d18f60875525625776e165c3caa72cd3cf869e"},
     {1, 0x80, 0xa0,
-     "37ddf58844782635ad6f1512be000a6d01c334684bfeea4c8890154159e680eb0fef733949ce3d3c8ed95da88a93c59e7b6009460f33797e2ae92c353e78954311bef044233e9d00aea313d76c6baf91868678562e6e5a59970e42a98b5a17f1"},
+     "37ddf58844782635ad6f1512be000a6d01c334684bfeea4c8890154159e680eb0fef733949ce3d3c8ed95da88a93c59e7b6009460f33797e2ae92c353e78954305cd45f6540faff68c285f6fdd8363823470f074bb1667dabe649339743da317"},
     {1, 0x81, 0xa1,
-     "0855b316bc32b08c6f83745497928e4bbd98ea4d1cb76a5029180c98f4b7ef2329d3778b0f9854ea969779e1d963cca06d03a865b0525302d493933ed53ba0331141e7aaca4dcfd199331422b4bae69b384b4d3a3e660a26c527896a0aad67fc"},
+     "0855b316bc32b08c6f83745497928e4bbd98ea4d1cb76a5029180c98f4b7ef2329d3778b0f9854ea969779e1d963cca06d03a865b0525302d493933ed53ba03317ccdcdecfb54f10bb914cd91826f00d74d1a9a552f764123d3e42eff028bae8"},
 };
 
 static const struct { size_t len; uint8_t tag; const char *digest; } BLAKE[] = {

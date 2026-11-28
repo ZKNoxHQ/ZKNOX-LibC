@@ -13,7 +13,9 @@ desktop hosts for testing.
 * **Poseidon** hash with circom-compatible constants
 * **BLAKE-512**
 * **Keccak-256**
-* **BabyJubjub** and **Bandersnatch** twisted-Edwards curves
+* **BabyJubjub** and **Bandersnatch** twisted-Edwards curves, each hashed
+  with the Poseidon instance of its base field (254/6/8/60 over BN254,
+  255/6/8/60 over the BLS12-381 scalar field)
 * **EdDSA-Poseidon** signing
 * **FROST** threshold signatures + VSS
 * **MPT** (Merkle Patricia Trie) helpers for Ethereum-style clear-signing
