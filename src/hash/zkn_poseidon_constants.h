@@ -53,6 +53,7 @@ typedef struct
   const uint8_t *mix_src;
   zkn_bn_t mix_constant;
   uint8_t stream_mix;
+  uint8_t field; /* instance: the field of the modulus (see zkn_poseidon_constants.c) */
 
 #ifdef _DYN_GEN
   uint64_t grain_state[2];

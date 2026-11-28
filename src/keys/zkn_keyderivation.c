@@ -9,6 +9,10 @@
 //   Master:  HMAC-SHA512(key="babyjubjub seed", data=BIP39_seed)
 //   Child:   CKDpriv((key,chain), i) = HMAC-SHA512(key=chain, data=0x00||key||ser32(i'))
 //
+// The Bandersnatch signing key is derived the same way under its own master,
+// HMAC-SHA512(key="bandersnatch seed", data=BIP39_seed), as SLIP-0010 does
+// for each curve it names.
+//
 // The Ledger SDK's os_derive_bip32_with_seed_no_throw with HDW_ED25519_SLIP10
 // implements exactly this derivation when given a custom seed key.
 
@@ -25,14 +29,13 @@
 // Private key derivation
 // ---------------------------------------------------------------------------
 
-zkn_error_t derive_railgun_key(const uint32_t *path, uint8_t *out_key, uint8_t *out_chain)
+// SLIP-0010 extended derivation under a custom seed key.
+// CX_CURVE_Ed25519 is used for the SLIP-0010 mechanics only: the 32-byte
+// output is an opaque seed, interpreted by the caller.
+static zkn_error_t derive_slip10_key(const uint32_t *path,
+                                     const char *seed_key, size_t seed_key_len,
+                                     uint8_t *out_key, uint8_t *out_chain)
 {
-    // SLIP-0010 extended derivation with custom seed key "babyjubjub seed".
-    // CX_CURVE_Ed25519 is used for the SLIP-0010 mechanics only —
-    // the 32-byte output is an opaque seed interpreted differently
-    // depending on the path:
-    //   - PATH_SPENDING → BabyJubjub private key (fed to zkn_prv2pub)
-    //   - PATH_VIEWING  → Ed25519 private key (fed to cx_ecfp_generate_pair)
     return os_derive_bip32_with_seed_no_throw(
         HDW_ED25519_SLIP10,
         CX_CURVE_Ed25519,
@@ -40,8 +43,41 @@ zkn_error_t derive_railgun_key(const uint32_t *path, uint8_t *out_key, uint8_t *
         PATH_LEN,
         out_key,
         out_chain,
-        (unsigned char *)BABYJUBJUB_SEED_KEY,
-        BABYJUBJUB_SEED_KEY_LEN);
+        (unsigned char *)seed_key,
+        seed_key_len);
+}
+
+zkn_error_t derive_railgun_key(const uint32_t *path, uint8_t *out_key, uint8_t *out_chain)
+{
+    // Seed key "babyjubjub seed". The output is interpreted depending on
+    // the path:
+    //   - PATH_SPENDING → BabyJubjub private key (fed to zkn_prv2pub)
+    //   - PATH_VIEWING  → Ed25519 private key (fed to cx_ecfp_generate_pair)
+    return derive_slip10_key(path, BABYJUBJUB_SEED_KEY, BABYJUBJUB_SEED_KEY_LEN,
+                             out_key, out_chain);
+}
+
+zkn_error_t derive_bandersnatch_key(const uint32_t *path, uint8_t *out_key, uint8_t *out_chain)
+{
+    // Seed key "bandersnatch seed": the Bandersnatch private key (fed to
+    // zkn_prv2pub on that curve).
+    return derive_slip10_key(path, BANDERSNATCH_SEED_KEY, BANDERSNATCH_SEED_KEY_LEN,
+                             out_key, out_chain);
+}
+
+zkn_error_t spending_key_type(uint32_t curve_id, key_type_t *type)
+{
+    switch (curve_id)
+    {
+    case _BABYJUJUB_ID:
+        *type = KEY_TYPE_SPENDING;
+        return ZKN_OK;
+    case _BANDERSNATCH_ID:
+        *type = KEY_TYPE_SPENDING_BANDERSNATCH;
+        return ZKN_OK;
+    default:
+        return ZKN_ERR_INVALID_PARAM;
+    }
 }
 
 zkn_error_t derive_private_key(key_type_t type, uint32_t account, uint8_t *out_key, uint8_t *out_chain)
@@ -56,6 +92,12 @@ zkn_error_t derive_private_key(key_type_t type, uint32_t account, uint8_t *out_k
         memcpy(path, PATH_SPENDING, sizeof(path));
         path[2] = account | HARDENED;
         return derive_railgun_key(path, out_key, out_chain);
+
+    case KEY_TYPE_SPENDING_BANDERSNATCH:
+        // SLIP-0010 extended with "bandersnatch seed": m/44'/1984'/account'/0'/0'
+        memcpy(path, PATH_SPENDING, sizeof(path));
+        path[2] = account | HARDENED;
+        return derive_bandersnatch_key(path, out_key, out_chain);
 
     case KEY_TYPE_VIEWING:
         // SLIP-0010 extended with "babyjubjub seed": m/420'/1984'/account'/0'/0'
@@ -206,13 +248,14 @@ cleanup:
 }
 
 // ---------------------------------------------------------------------------
-// Public key derivation — BabyJubjub
+// Public key derivation — twisted Edwards (BabyJubjub, Bandersnatch)
 // ---------------------------------------------------------------------------
 
-zkn_error_t derive_pubkey_babyjubjub(const uint8_t *privkey_bytes,
-                                     pubkey_format_t format,
-                                     uint8_t *pubkey_out,
-                                     size_t *pubkey_len)
+static zkn_error_t derive_pubkey_tedwards(uint32_t curve_id,
+                                          const uint8_t *privkey_bytes,
+                                          pubkey_format_t format,
+                                          uint8_t *pubkey_out,
+                                          size_t *pubkey_len)
 {
     zkn_error_t err;
     zkn_edcurve_t curve;
@@ -224,7 +267,7 @@ zkn_error_t derive_pubkey_babyjubjub(const uint8_t *privkey_bytes,
     bool curve_allocated = false;
     bool pubkey_allocated = false;
 
-    // Only raw format supported for BabyJubjub
+    // Only raw format supported on these curves
     if (format != PUBKEY_FORMAT_RAW)
     {
         return ZKN_ERR_INVALID_PARAM;
@@ -240,8 +283,8 @@ zkn_error_t derive_pubkey_babyjubjub(const uint8_t *privkey_bytes,
         goto cleanup;
     bn_locked = true;
 
-    // Initialize BabyJubjub curve
-    err = tEdwards_Curve_alloc_init(&curve, _BABYJUJUB_ID);
+    // Initialize the curve
+    err = tEdwards_Curve_alloc_init(&curve, curve_id);
     if (err != ZKN_OK)
         goto cleanup;
     curve_allocated = true;
@@ -290,6 +333,22 @@ cleanup:
     return err;
 }
 
+zkn_error_t derive_pubkey_babyjubjub(const uint8_t *privkey_bytes,
+                                     pubkey_format_t format,
+                                     uint8_t *pubkey_out,
+                                     size_t *pubkey_len)
+{
+    return derive_pubkey_tedwards(_BABYJUJUB_ID, privkey_bytes, format, pubkey_out, pubkey_len);
+}
+
+zkn_error_t derive_pubkey_bandersnatch(const uint8_t *privkey_bytes,
+                                       pubkey_format_t format,
+                                       uint8_t *pubkey_out,
+                                       size_t *pubkey_len)
+{
+    return derive_pubkey_tedwards(_BANDERSNATCH_ID, privkey_bytes, format, pubkey_out, pubkey_len);
+}
+
 // ---------------------------------------------------------------------------
 // Public key derivation — dispatcher
 // ---------------------------------------------------------------------------
@@ -308,6 +367,9 @@ zkn_error_t derive_public_key(key_type_t type,
 
     case KEY_TYPE_SPENDING:
         return derive_pubkey_babyjubjub(privkey_bytes, format, pubkey_out, pubkey_len);
+
+    case KEY_TYPE_SPENDING_BANDERSNATCH:
+        return derive_pubkey_bandersnatch(privkey_bytes, format, pubkey_out, pubkey_len);
 
     default:
         return ZKN_ERR_INVALID_PARAM;

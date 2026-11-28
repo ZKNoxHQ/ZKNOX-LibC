@@ -15,7 +15,8 @@ typedef enum
 {
     KEY_TYPE_SPENDING = 3, // BabyJubjub
     KEY_TYPE_VIEWING = 4,  // Ed25519
-    KEY_TYPE_DKG_COMM = 5  // Ed25519 — non-exported DKG transport identity
+    KEY_TYPE_DKG_COMM = 5, // Ed25519 — non-exported DKG transport identity
+    KEY_TYPE_SPENDING_BANDERSNATCH = 6 // Bandersnatch, under its own seed key
 } key_type_t;
 
 // Public key output formats
@@ -49,6 +50,18 @@ typedef enum
 #define BABYJUBJUB_SEED_KEY "babyjubjub seed"
 #define BABYJUBJUB_SEED_KEY_LEN 15
 
+// ---------------------------------------------------------------------------
+// SLIP-0010 extended seed key of the Bandersnatch signing key.
+// SLIP-0010 names one master key per curve ("ed25519 seed", "Nist256p1 seed",
+// "Bitcoin seed"). The Bandersnatch key follows that rule instead of sharing
+// the BabyJubjub master: the same 32 bytes are then never a private key on
+// both curves, and neither key says anything about the other.
+//   master = HMAC-SHA512(key="bandersnatch seed", data=BIP39_seed)
+//   child  = SLIP-0010 hardened derivation, same path as PATH_SPENDING
+// ---------------------------------------------------------------------------
+#define BANDERSNATCH_SEED_KEY "bandersnatch seed"
+#define BANDERSNATCH_SEED_KEY_LEN 17
+
 // Standard paths (5 levels)
 //
 // Account index sits at PATH[2] (hardened) for every type.
@@ -76,6 +89,7 @@ static const uint32_t PATH_DKG_COMM[] = {
 #define PUBKEY_SECP256K1_UNCOMPRESSED_LEN 65
 #define PUBKEY_ED25519_LEN 32
 #define PUBKEY_BABYJUBJUB_LEN 64 // x || y (32 + 32 bytes)
+#define PUBKEY_BANDERSNATCH_LEN 64 // x || y (32 + 32 bytes)
 #define ADDRESS_LEN 20
 
 /**
@@ -83,6 +97,8 @@ static const uint32_t PATH_DKG_COMM[] = {
  *
  * For Railgun (SPENDING, VIEWING, DKG_COMM): SLIP-0010 extended with
  * "babyjubjub seed"; every role has a distinct hardened path.
+ * For SPENDING_BANDERSNATCH: SLIP-0010 extended with "bandersnatch seed",
+ * on the path of SPENDING.
  * @param type       Key type (determines path, curve, and seed key)
  * @param account    Account index (path level 2: m/purpose'/coin'/account'/...)
  * @param out_key    32 bytes output for private key
@@ -109,6 +125,23 @@ zkn_error_t derive_private_key(key_type_t type, uint32_t account, uint8_t *out_k
 zkn_error_t derive_railgun_key(const uint32_t *path, uint8_t *out_key, uint8_t *out_chain);
 
 /**
+ * Derive the Bandersnatch signing key: SLIP-0010 extended with
+ * "bandersnatch seed". Same mechanics and same arguments as
+ * derive_railgun_key; only the HMAC key of the master differs.
+ */
+zkn_error_t derive_bandersnatch_key(const uint32_t *path, uint8_t *out_key, uint8_t *out_chain);
+
+/**
+ * Key type of the signing key of a twisted-Edwards curve: KEY_TYPE_SPENDING
+ * for BabyJubjub, KEY_TYPE_SPENDING_BANDERSNATCH for Bandersnatch.
+ *
+ * @param curve_id   _BABYJUJUB_ID or _BANDERSNATCH_ID (zkn_tEdwards.h)
+ * @param type       receives the key type
+ * @return           ZKN_ERR_INVALID_PARAM for any other curve
+ */
+zkn_error_t spending_key_type(uint32_t curve_id, key_type_t *type);
+
+/**
  * Derive secp256k1 public key from private key bytes
  */
 zkn_error_t derive_pubkey_secp256k1(const uint8_t *privkey_bytes,
@@ -131,6 +164,14 @@ zkn_error_t derive_pubkey_babyjubjub(const uint8_t *privkey_bytes,
                                      pubkey_format_t format,
                                      uint8_t *pubkey_out,
                                      size_t *pubkey_len);
+
+/**
+ * Derive Bandersnatch public key from private key bytes
+ */
+zkn_error_t derive_pubkey_bandersnatch(const uint8_t *privkey_bytes,
+                                       pubkey_format_t format,
+                                       uint8_t *pubkey_out,
+                                       size_t *pubkey_len);
 
 /**
  * Derive public key from private key based on key type

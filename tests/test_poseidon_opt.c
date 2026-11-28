@@ -6,8 +6,8 @@
  *     Poseidon-7 over BN254: the last linear layer is computed row by row,
  *     for the requested outputs only;
  *   - known answers for Poseidon-5 over the BLS12-381 scalar field, the hash
- *     of EdDSA / FROST on Bandersnatch (same parameter set, other field,
- *     other tables);
+ *     of EdDSA / FROST on Bandersnatch (the 255/6/8/60 instance of that
+ *     field, its own constants and matrix);
  *   - a context hashes twice;
  *   - zkn_poseidon_init refuses what it has no table for.
  *
@@ -136,23 +136,23 @@ static const struct {
       "06ebc44aad776e3d79a9247f1c902f598bc1ac586d2f66452608ce1a0939dd68"
       "1fbd7114bcfd08ce97428d96df69761411d819f9768938d9f75628cc5660789e" },
     { F_BLS12381, 5, 0, 0, 1,
-      "158294012994ff0f9d8fb4109224e12a30626fc5cf2f585d6ff11713ec162899" },
+      "104f17d24cdf5767e266bcb1ed9448ebe29d046b3211d14778ff8c7525dd0aa8" },
     { F_BLS12381, 5, 0, 7, 6,
-      "537e10a79aac355244a1904ee44bc80ed85260593a740ceff4a1a890c1202833"
-      "17c0da3959893317254f04a1ee9bb0c84baa55063ed7bc70603012f50038b30a"
-      "292d4176937c0e4f31f80ea22a6e1f66edb6faff9bbf9c12475c103b45223841"
-      "44c974732ecd936c28a41b676f8c389bcdde1c44713b932d8fb885571145d9fb"
-      "30a2daeed3501242cf4b2eb80c0ca038571ffff215fe2bec524a8fd2e705f2e0"
-      "61bdfdcaeac6d584bf7e49fda85f37b8dd83ddc4c75957e4fabc17b8aea8b0a9" },
+      "176d053c069c96aefadbccf4785497afe222d4ccc3ab48c2e2321d381e899cb8"
+      "3ec83f362f248f5f95cbb74138871268761fa3092b44ec3a37cd870f7dac1cbd"
+      "18a203b49f7a53c503c02e1ff01204b8facb0352ae1069ca8af3941acfd614bb"
+      "0a56c482540117d74d8b976f98842bcfa21c2f5c2b806138bc9b8486fbd0b468"
+      "5e20190258d6907320a0ad854469879e2a502244cc2e8b49433d77b11377a721"
+      "2aa0e6c14e47763557fe943f23dd347ce45a5506992dccd72c3a7f52badfc7ba" },
     { F_BLS12381, 5, 1, 0, 1,
-      "2ec0ae7d5932a9a1f28115ec10493d374726a4fb38f7cced3689737bb73f6bac" },
+      "385eb6ccf6513f4c22b9334f39d7e684ac9060bfd831fa2fa51ee1b6bf8b0409" },
     { F_BLS12381, 5, 1, 7, 6,
-      "21839f446b9a4f443a1eaf99e418eaf072a515846e88cb0a847392e30c0b8c62"
-      "15bc36888b5962f4f48e6a558fc25416b5312d3f7024776d9560fa97d2e11ef9"
-      "2851bc49b405b59782e9d3668204def94694f2c85e78fd9a63889eb607b53401"
-      "3062ffa1f5b8ade8e13cbfbca9ed45580e1987cc16c4ac6e7cfe4e08e4a0a5de"
-      "654cb7df711e33a8aa830e7732d100dc2d8bc5411024bae97cb0fa834dbad511"
-      "4019af4128cc0dae7da0b37d1ea58e377740de8d67a3dead5d1beb02ecc14219" },
+      "209a1dae896634365de3f5d1f1943f5cae77bdfa5e97f2d406eac2af9b81458c"
+      "1963c89a07c514def0a06adb523fab355c92156d72461778b52da9ea47133dc4"
+      "111468a2a21afed4c780a55458242b9e9b5a9ac6d0aa689c663947314bfbbbb0"
+      "0c7abfed7c502f2b5e97dcb61ef3eb6b4809f6b46b17ba3a9648614130b71a09"
+      "531ff321cd367b69d7fae2229a3e7c270223bd010d08e9e5c8585d267fa52788"
+      "0b17074db3e9183493fa42c5ad8bdebe92b032b8b669c1f1e00a460572dacd07" },
 };
 
 static void hex32(const char *s, uint8_t out[32])
