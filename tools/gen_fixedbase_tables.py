@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""Generate src/ecc/zkn_fixedbase72_tables.{c,h}.
+
+    python3 tools/gen_fixedbase_tables.py            # write the two files
+    python3 tools/gen_fixedbase_tables.py --check    # fail if the files on disk differ
+
+Tables of the fixed-base multiplication with a blinded scalar
+(tEdwards_fixedBase_4MSM_blind). The scalar k + lambda * l has up to 288
+bits, so the comb has four windows of 72 bits instead of 64:
+
+    T[sel] = b1.P1 + b2.P2 + b3.P3 + b4.P4,   sel = (b1<<3)|(b2<<2)|(b3<<1)|b4
+    P1 = G, P2 = 2^72.G, P3 = 2^144.G, P4 = 2^216.G
+
+Same layout as the 64-bit tables of bbjj_precomp.c and
+bandersnatch_precomp.c: affine coordinates in Montgomery form (x * 2^256 mod
+p), 32 bytes big endian, entry 0 unused (the neutral element is supplied by
+the caller).
+
+Before writing anything, the script rebuilds those 64-bit tables with the
+same code and compares them with the bytes in the two C files. The curve
+arithmetic here is plain affine Python, independent of the library.
+"""
+import argparse
+import os
+import re
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ECC = os.path.join(HERE, "..", "src", "ecc")
+
+CURVES = [
+    dict(tag="bbjj", name="BabyJubjub", src="bbjj_precomp.c", arr="_bbjj_4msm",
+         p=21888242871839275222246405745257275088548364400416034343698204186575808495617,
+         a=168700, d=168696,
+         l=2736030358979909402780800718157159386076813972158567259200215660948447373041,
+         G=(5299619240641551281634865583518297030282874472190772894086521144482721001553,
+            16950150798460657717958625567821834550301663161624707787222815936182638968203)),
+    dict(tag="bandersnatch", name="Bandersnatch", src="bandersnatch_precomp.c", arr="_bandersnatch_4msm",
+         p=0x73EDA753299D7D483339D80809A1D80553BDA402FFFE5BFEFFFFFFFF00000001,
+         a=-5, d=45022363124591815672509500913686876175488063829319466900776701791074614335719,
+         l=0x1CFB69D4CA675F520CCE760202687600FF8F87007419047174FD06B52876E7E1,
+         G=(0x29C132CC2C0B34C5743711777BBE42F32B79C022AD998465E1E71866A252AE18,
+            0x2A6C669EDA123E0F157D8B50BADCD586358CAD81EEE464605E3167B6CC974166)),
+]
+
+
+def comb(c, spacing):
+    """The 16 entries, as affine points; entry 0 is the neutral element."""
+    p, a, d = c["p"], c["a"] % c["p"], c["d"]
+
+    def add(P, Q):
+        x1, y1 = P
+        x2, y2 = Q
+        t = d * x1 * x2 * y1 * y2 % p
+        return ((x1 * y2 + y1 * x2) * pow(1 + t, -1, p) % p, (y1 * y2 - a * x1 * x2) * pow(1 - t, -1, p) % p)
+
+    def mul(k, P):
+        R = (0, 1)
+        while k:
+            if k & 1:
+                R = add(R, P)
+            P = add(P, P)
+            k >>= 1
+        return R
+
+    G = c["G"]
+    assert (a * G[0] * G[0] + G[1] * G[1] - 1 - d * G[0] * G[0] * G[1] * G[1]) % p == 0
+    assert mul(c["l"], G) == (0, 1)
+    P = [mul(1 << (spacing * i), G) for i in range(4)]
+    table = []
+    for sel in range(16):
+        R = (0, 1)
+        for i in range(4):
+            if (sel >> (3 - i)) & 1:
+                R = add(R, P[i])
+        table.append(R)
+    return table
+
+
+def mont_bytes(v, p):
+    return (v * (1 << 256) % p).to_bytes(32, "big")
+
+
+def parse_c_table(path, name):
+    """The 16 x 32 bytes of a `name[16][32]` initializer."""
+    text = re.sub(r"/\*.*?\*/", "", open(path).read(), flags=re.S)
+    m = re.search(re.escape(name) + r"\[16\]\[32\]\s*=\s*\{(.*?)\};", text, flags=re.S)
+    if not m:
+        sys.exit(f"{path}: no {name}[16][32]")
+    data = bytes(int(b, 16) for b in re.findall(r"0x([0-9a-fA-F]{2})", m.group(1)))
+    assert len(data) == 16 * 32, (name, len(data))
+    return [data[32 * i:32 * (i + 1)] for i in range(16)]
+
+
+def self_check():
+    """The generator reproduces the 64-bit tables the library already has."""
+    for c in CURVES:
+        want_x = parse_c_table(os.path.join(ECC, c["src"]), c["arr"] + "_mx")
+        want_y = parse_c_table(os.path.join(ECC, c["src"]), c["arr"] + "_my")
+        table = comb(c, 64)
+        for sel in range(1, 16):
+            if mont_bytes(table[sel][0], c["p"]) != want_x[sel] or mont_bytes(table[sel][1], c["p"]) != want_y[sel]:
+                sys.exit(f"{c['name']}: entry {sel} of the 64-bit table does not match {c['src']}")
+
+
+def c_array(name, rows, labels):
+    out = [f"static const uint8_t {name}[16][32] = {{"]
+    for sel, row in enumerate(rows):
+        out.append(f"    {{/* [{sel:2d}] {labels[sel]} */")
+        for i in (0, 16):
+            out.append("     " + ", ".join(f"0x{b:02x}" for b in row[i:i + 16]) + ("," if i == 0 else "},"))
+    out.append("};")
+    return out
+
+
+def generate():
+    labels = ["neutral, unused"] + ["+".join(f"P{i + 1}" for i in range(4) if (sel >> (3 - i)) & 1) for sel in range(1, 16)]
+    c_out = ["/* zkn_fixedbase72_tables.c",
+             " * SPDX-License-Identifier: Apache-2.0",
+             " * Copyright (c) 2025 ZKNOX",
+             " *",
+             " * Generated by tools/gen_fixedbase_tables.py. Do not edit: change the",
+             " * generator and run it again.",
+             " *",
+             " * Fixed-base tables with four windows of 72 bits, for a scalar of up to",
+             " * 288 bits (tEdwards_fixedBase_4MSM_blind):",
+             " *   T[sel] = b1.P1 + b2.P2 + b3.P3 + b4.P4, sel = (b1<<3)|(b2<<2)|(b3<<1)|b4",
+             " *   P1 = G, P2 = 2^72.G, P3 = 2^144.G, P4 = 2^216.G",
+             " * Affine coordinates in Montgomery form, 32 bytes big endian.",
+             " */",
+             '#include "zkn_fixedbase72_tables.h"', ""]
+    for c in CURVES:
+        table = comb(c, 72)
+        c_out += [f"/* ── {c['name']} ── */"]
+        c_out += c_array(f"_{c['tag']}_4msm72_mx", [bytes(32)] + [mont_bytes(P[0], c["p"]) for P in table[1:]], labels)
+        c_out += [""]
+        c_out += c_array(f"_{c['tag']}_4msm72_my", [bytes(32)] + [mont_bytes(P[1], c["p"]) for P in table[1:]], labels)
+        c_out += ["",
+                  f"void {c['tag']}_get_4msm72_table(const uint8_t (**T_mx)[32], const uint8_t (**T_my)[32])",
+                  "{",
+                  f"    *T_mx = _{c['tag']}_4msm72_mx;",
+                  f"    *T_my = _{c['tag']}_4msm72_my;",
+                  "}", ""]
+    h_out = ["/* zkn_fixedbase72_tables.h",
+             " * SPDX-License-Identifier: Apache-2.0",
+             " * Copyright (c) 2025 ZKNOX",
+             " *",
+             " * Generated by tools/gen_fixedbase_tables.py. Do not edit.",
+             " */",
+             "#ifndef ZKN_FIXEDBASE72_TABLES_H",
+             "#define ZKN_FIXEDBASE72_TABLES_H",
+             "",
+             "#include <stdint.h>",
+             "",
+             "/* 16 points each, four windows of 72 bits. Entry 0 is not used. */"]
+    for c in CURVES:
+        h_out.append(f"void {c['tag']}_get_4msm72_table(const uint8_t (**T_mx)[32], const uint8_t (**T_my)[32]);")
+    h_out += ["", "#endif", ""]
+    return "\n".join(c_out), "\n".join(h_out)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--check", action="store_true", help="compare with the files on disk, write nothing")
+    args = ap.parse_args()
+    self_check()
+    files = dict(zip(("zkn_fixedbase72_tables.c", "zkn_fixedbase72_tables.h"), generate()))
+    if args.check:
+        same = all(os.path.exists(os.path.join(ECC, n)) and open(os.path.join(ECC, n)).read() == t for n, t in files.items())
+        print("zkn_fixedbase72_tables.{c,h} are up to date" if same else "zkn_fixedbase72_tables.{c,h} differ from the generator")
+        return 0 if same else 1
+    for n, t in files.items():
+        with open(os.path.join(ECC, n), "w") as f:
+            f.write(t)
+    print("the 64-bit tables of the library are reproduced; wrote src/ecc/zkn_fixedbase72_tables.c and .h")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -23,6 +23,11 @@
  * Copyright (c) 2025 ZKNOX / Kohaku
  */
 
+/* ARMv6-M cores (SC000: Ledger Nano S) only have Thumb-1: no UMULL/UMLAL,
+ * no IT blocks. Assemble to an empty object there; zkn_mont256.c provides
+ * the C versions when ZKN_MONT256_ASM is left undefined. */
+#if defined(__ARM_ARCH_ISA_THUMB) && (__ARM_ARCH_ISA_THUMB >= 2)
+
     .syntax unified
     .thumb
     .cpu cortex-m3
@@ -495,6 +500,8 @@ zkn_from_mont_256:
     pop     {pc}
 
     .size   zkn_from_mont_256, . - zkn_from_mont_256
+
+#endif /* Thumb-2 */
 
     .section .note.GNU-stack, "", %progbits
 

@@ -128,4 +128,19 @@ int tEdwards_4MSM_precomp_table(zkn_edcurve_t *curve, const uint8_t (*T_mx)[32],
 int tEdwards_fixedBase_2MSM(zkn_edcurve_t *curve, const uint8_t *k, zkn_edpoint_t *R);
 int tEdwards_fixedBase_4MSM(zkn_edcurve_t *curve, const uint8_t *k, zkn_edpoint_t *R);
 
+#if defined(ZKN_FIXEDBASE_FLASH_TABLE) && defined(ZKN_BN_BACKEND_SW)
+/* R = [k]G computed as [k + lambda * l]G, l the order of G and lambda 32
+ * random bits drawn for the call: the same point, and a sequence of table
+ * entries that changes from one call to the next. For a scalar that is used
+ * many times, such as a private key, where the table read from flash cannot
+ * be randomized. k is 32 bytes big endian, any value. 72 steps over the
+ * tables of zkn_fixedbase72_tables.c instead of 64.
+ *
+ * tEdwards_fixedBase_4MSM_masked is the same with lambda supplied by the
+ * caller. */
+#define ZKN_HAVE_FIXEDBASE_BLIND 1
+int tEdwards_fixedBase_4MSM_blind(zkn_edcurve_t *curve, const uint8_t *k, zkn_edpoint_t *R);
+int tEdwards_fixedBase_4MSM_masked(zkn_edcurve_t *curve, const uint8_t *k, uint32_t lambda, zkn_edpoint_t *R);
+#endif
+
 #endif

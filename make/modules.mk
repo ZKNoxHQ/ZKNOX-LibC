@@ -18,7 +18,8 @@ SRCS_COMPAT    := src/compat/zkn_hash_compat.c src/compat/zkn_rng_compat.c
 # Montgomery 256-bit (used by bn_sw + Poseidon soft + Fp2 256)
 SRCS_MONT256   := src/zkn_mont/zkn_mont256.c
 SRCS_FP2_256   := src/zkn_mont/zkn_fp2.c
-SRCS_POSEIDON_SOFT := src/zkn_mont/zkn_poseidon_soft.c
+SRCS_POSEIDON_SOFT := src/zkn_mont/zkn_poseidon_soft.c \
+                      src/zkn_mont/zkn_poseidon_opt_tables.c
 
 # Montgomery 384-bit (BLS12-381 field arithmetic)
 SRCS_MONT384   := src/bls12381/zkn_sw_mont384.c
@@ -60,7 +61,8 @@ SRCS_AES       := src/aes/zkn_aes_gcm.c
 # Curve operations: twisted Edwards (BabyJubjub, Bandersnatch)
 SRCS_CURVE     := src/ecc/zkn_tEdwards.c \
                   src/ecc/bbjj_precomp.c \
-                  src/ecc/bandersnatch_precomp.c
+                  src/ecc/bandersnatch_precomp.c \
+                  src/ecc/zkn_fixedbase72_tables.c
 
 # EdDSA-Poseidon signing
 SRCS_EDDSA     := src/ecc/zkn_eddsa.c

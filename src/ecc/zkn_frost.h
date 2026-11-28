@@ -53,8 +53,15 @@ int zkn_partial_sig(
     uint8_t *lambda_i,
     uint8_t *sig);
 
+/* Largest quorum the FROST entry points accept. It sizes stack arrays
+ * (32 bytes of binding factor and one bignum per signer), so low-RAM builds
+ * default to 5, enough for 3-of-5. Override with -DZKN_FROST_MAX_SIGNERS=n. */
 #ifndef ZKN_FROST_MAX_SIGNERS
+#ifdef ZKN_LOW_RAM
+#define ZKN_FROST_MAX_SIGNERS 5
+#else
 #define ZKN_FROST_MAX_SIGNERS 16
+#endif
 #endif
 
 // High-level FROST API (mirrors curves-lite/babyfrost.ts).

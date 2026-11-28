@@ -5,7 +5,12 @@
  * All cx_bn/cx_mont calls replaced with zkn_bn equivalents.
  *
  * Supports Poseidon-1 through Poseidon-7 (1..7 inputs, 2..8 state cells, pow=5).
- * Field: BN254 scalar field (BabyJubjub base field).
+ * Field: BN254 scalar field (BabyJubjub base field); Poseidon-5 also over the
+ * BLS12-381 scalar field (Bandersnatch base field), with the same parameter
+ * set. The field is the modulus of the Montgomery context given to
+ * zkn_poseidon_init. Which (field, arity) pairs are compiled in is set by
+ * ZKN_POSEIDON_ARITIES / ZKN_POSEIDON_BLS12381_ARITIES, see
+ * zkn_poseidon_opt_tables.h.
  *
  * Copyright (c) 2025 ZKNOX / Kohaku
  */
@@ -14,6 +19,7 @@
 #define ZKN_POSEIDON_SOFT_H
 
 #include "zkn_bn.h"
+#include "zkn_poseidon_opt_tables.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -22,8 +28,17 @@ extern "C" {
 /* ── Constants ─────────────────────────────────────────────────────── */
 
 #define POSEIDON_NROUNDS_F   8    /* full rounds (constant across arities)   */
+/* Largest arity the context is sized for. An application that needs less
+ * can lower it (-DPOSEIDON_MAX_INPUTS=5): the context holds two arrays of
+ * POSEIDON_MAX_CELLS field elements, and zkn_poseidon_init refuses anything
+ * above the bound. */
+#ifndef POSEIDON_MAX_INPUTS
 #define POSEIDON_MAX_INPUTS  7
-#define POSEIDON_MAX_CELLS   8    /* inputs + 1 */
+#endif
+#if POSEIDON_MAX_INPUTS < 1 || POSEIDON_MAX_INPUTS > 7
+#error "POSEIDON_MAX_INPUTS must be in 1..7"
+#endif
+#define POSEIDON_MAX_CELLS   (POSEIDON_MAX_INPUTS + 1)
 
 #define POSEIDON_INITIALIZED 0xA5A5A5A5u
 
@@ -41,10 +56,12 @@ typedef struct {
     zkn_bn_mont_ctx_t *mont;
 
     zkn_bn_t state[POSEIDON_MAX_CELLS];
-    zkn_bn_t MixColumn[POSEIDON_MAX_CELLS * POSEIDON_MAX_CELLS];
 
-    /* Grain LFSR for round constant generation */
-    uint64_t grain_state[2];
+    /* Table of this (field, arity), in flash: C | MT [| PT | S] in Montgomery
+     * form (zkn_poseidon_opt_tables.h), and the number of partial rounds,
+     * counted from the last, that use its sparse matrices. */
+    const zkn_poseidon_fe_t *tab;
+    size_t rounds_sparse;
 
     /* scratch space */
     zkn_bn_t temp;
@@ -56,9 +73,11 @@ typedef struct {
 /**
  * Initialize Poseidon context.
  * @param ctx        Context to initialize
- * @param pow        S-box exponent (5 for circomlib)
+ * @param pow        S-box exponent: 5, anything else is refused
  * @param nb_inputs  Number of hash inputs (e.g. 5)
- * @param montctx    Already-initialized Montgomery context (BJJ field)
+ * @param montctx    Already-initialized Montgomery context. Its modulus selects
+ *                   the field; ZKN_INVALID_PARAM when no table is compiled in
+ *                   for (modulus, nb_inputs).
  * @param modulus    Modulus used to initialize montctx
  */
 int zkn_poseidon_init(poseidon_soft_ctx_t *ctx,
@@ -71,7 +90,9 @@ int zkn_poseidon_init(poseidon_soft_ctx_t *ctx,
  * Compute Poseidon hash.
  * Inputs must already be loaded into ctx->state[1..nb_inputs] in Montgomery form.
  * ctx->state[0] is set to initState (typically 0).
- * Output is in Montgomery form in ctx->state[0..sizeout-1].
+ * Output is in Montgomery form in ctx->state[0..sizeout-1], copied to out[].
+ * The cells past sizeout are not outputs: their content is unspecified.
+ * The context can be reused for another hash once the inputs are reloaded.
  *
  * @param ctx        Initialized Poseidon context
  * @param initState  Initial state[0] value (usually 0)
@@ -87,9 +108,7 @@ int zkn_poseidon(poseidon_soft_ctx_t *ctx,
  * Release every zkn_bn handle held by the context.
  *
  * On the SW backend (zkn_bn_sw) this is a no-op since zkn_bn_destroy itself
- * is a no-op there. On the Ledger cx_bn backend it returns the
- * (n+1)^2 + 2(n+1) + 1 bignums back to the BOLOS pool, which is required
- * to avoid pool exhaustion across successive calls.
+ * is a no-op there.
  */
 int zkn_poseidon_destroy(poseidon_soft_ctx_t *ctx);
 

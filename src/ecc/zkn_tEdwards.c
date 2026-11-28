@@ -11,6 +11,7 @@
 #include "zkn_tEdwards.h"
 #include "bbjj_precomp.h"
 #include "bandersnatch_precomp.h"
+#include "zkn_fixedbase72_tables.h"
 
 int tEdwards_alloc(zkn_edcurve_t *curve, zkn_edpoint_t *G)
 {
@@ -161,7 +162,7 @@ int tEdwards_IsOnCurve(zkn_edcurve_t *curve, zkn_edpoint_t *P, bool *flag)
 
   ZKN_CHECK(zkn_mont_from_montgomery(curve->d, curve->d, &curve->ctx));
   ZKN_CHECK(zkn_mont_from_montgomery(curve->e, curve->e, &curve->ctx));
-  ZKN_CHECK(zkn_bn_cmp(curve->d, curve->e, &cmp)); // a.x^2+y^2 == 1+d(x^2*y^2) ?
+  ZKN_CHECK(zkn_bn_cmp_mod(curve->d, curve->e, curve->modulus, &cmp)); // a.x^2+y^2 == 1+d(x^2*y^2) ?
 
   *flag = (bool)(cmp == 0);
 
@@ -209,8 +210,9 @@ int tEdwards_IsNeutral(zkn_edcurve_t *curve, zkn_edpoint_t *P, bool *flag)
 {
   ZKN_ERROR_INIT();
   int cx = 1, cyz = 1;
-  ZKN_CHECK(zkn_bn_cmp_u32(P->x, 0, &cx));
-  ZKN_CHECK(zkn_bn_cmp(P->y, P->z, &cyz));
+  /* As residues: a backend may hold a coordinate as its value plus p. */
+  ZKN_CHECK(zkn_bn_cmp_u32_mod(P->x, 0, curve->modulus, &cx));
+  ZKN_CHECK(zkn_bn_cmp_mod(P->y, P->z, curve->modulus, &cyz));
   *flag = (cx == 0 && cyz == 0);
   ZKN_UNUSED(curve);
   ZKN_ERROR_CLOSE();
@@ -977,6 +979,148 @@ cleanup:
   ZKN_ERROR_CLOSE();
 }
 
+#if defined(ZKN_LOW_RAM) && !(defined(ZKN_FIXEDBASE_FLASH_TABLE) && defined(ZKN_BN_BACKEND_SW))
+/* ================================================================== */
+/*  Constant-time 2MSM — the low-RAM fixed-base path                   */
+/* ================================================================== */
+
+/**
+ * @brief Constant-time 2MSM over a 4-entry precomputed table.
+ *
+ * Same construction as tEdwards_4MSM_precomp_table, with two 128-bit
+ * scalars instead of four 64-bit ones:
+ *   - all 2^len iterations are run, starting from R = neutral;
+ *   - every iteration doubles and adds, T[0] = neutral absorbing the
+ *     zero windows (unified Edwards addition);
+ *   - the table entry is selected by scanning all entries under a mask;
+ *   - T[1..3] get a fresh projective randomization at setup, and R is
+ *     re-randomized every CORONIZE_PERIOD iterations.
+ *
+ * What changes is the trade: the randomized table held in RAM is
+ * 4 x 96 bytes instead of 16 x 96 (1152 bytes less stack), and the loop
+ * runs 128 double-and-add steps instead of 64.
+ *
+ * T_mx[4][32] / T_my[4][32]: Montgomery-affine coordinates, indexed by
+ * sel = (bit_k1 << 1) | bit_k2 — the layout of tEdwards_2MSM_precomp_table:
+ *   T[0] = O   T[1] = P2   T[2] = P1   T[3] = P1 + P2
+ */
+static int tEdwards_2MSM_precomp_table_ct(zkn_edcurve_t *curve,
+                                          const uint8_t (*T_mx)[32],
+                                          const uint8_t (*T_my)[32],
+                                          const uint8_t *k1, size_t len1,
+                                          const uint8_t *k2, size_t len2,
+                                          zkn_edpoint_t *R)
+{
+  if (len1 > curve->fieldsize8 || len2 > curve->fieldsize8)
+    return ZKN_NOTIMPLEMENTED;
+
+  ZKN_ERROR_INIT();
+
+  zkn_bn_t bnk1, bnk2;
+  bool bit1, bit2;
+
+  ZKN_CHECK(zkn_bn_alloc_init(&bnk1, curve->fieldsize8, k1, len1));
+  ZKN_CHECK(zkn_bn_alloc_init(&bnk2, curve->fieldsize8, k2, len2));
+
+  /* All-zero fast path, as in the 4MSM: never taken by a signing scalar. */
+  int cmp1 = 0, cmp2 = 0;
+  ZKN_CHECK(zkn_bn_cmp_u32(bnk1, 0, &cmp1));
+  ZKN_CHECK(zkn_bn_cmp_u32(bnk2, 0, &cmp2));
+
+  if (cmp1 == 0 && cmp2 == 0)
+  {
+    ZKN_CHECK(tEdwards_SetNeutral(curve, R));
+    goto cleanup;
+  }
+
+  size_t maxlen = len1;
+  if (len2 > maxlen)
+    maxlen = len2;
+
+  int top = (int)(maxlen << 3) - 1;
+
+  /* Randomized table as byte arrays, T[0] = neutral = (0, mont_One, mont_One). */
+  uint8_t CT_x[4][32] = {0};
+  uint8_t CT_y[4][32] = {0};
+  uint8_t CT_z[4][32] = {0};
+
+  ZKN_CHECK(zkn_bn_export(curve->mont_One, CT_y[0], curve->fieldsize8));
+  memcpy(CT_z[0], CT_y[0], curve->fieldsize8);
+
+  zkn_edpoint_t Tsel;
+  ZKN_CHECK(tEdwards_alloc(curve, &Tsel));
+  for (uint8_t i = 1; i < 4; i++)
+  {
+    ZKN_CHECK(zkn_bn_init(Tsel.x, T_mx[i], curve->fieldsize8));
+    ZKN_CHECK(zkn_bn_init(Tsel.y, T_my[i], curve->fieldsize8));
+    ZKN_CHECK(zkn_bn_copy(Tsel.z, curve->mont_One));
+    ZKN_CHECK(tEdwards_Coronize(curve, &Tsel));
+    ZKN_CHECK(zkn_bn_export(Tsel.x, CT_x[i], curve->fieldsize8));
+    ZKN_CHECK(zkn_bn_export(Tsel.y, CT_y[i], curve->fieldsize8));
+    ZKN_CHECK(zkn_bn_export(Tsel.z, CT_z[i], curve->fieldsize8));
+  }
+
+  ZKN_CHECK(tEdwards_SetNeutral(curve, R));
+
+  uint8_t Tsel_x[32], Tsel_y[32], Tsel_z[32];
+
+  /* Same period as the 4MSM: with top = 127 that is 7 re-randomizations
+   * of R per scalar multiplication. */
+  const int CORONIZE_PERIOD = 16;
+
+  for (int pos = top; pos >= 0; pos--)
+  {
+    ZKN_CHECK(zkn_bn_tst_bit(bnk1, (uint32_t)pos, &bit1));
+    ZKN_CHECK(zkn_bn_tst_bit(bnk2, (uint32_t)pos, &bit2));
+
+    uint8_t sel = (uint8_t)((bit1 ? 2u : 0u) | (bit2 ? 1u : 0u));
+
+    /* Oblivious lookup: scan the 4 entries, keep the one with i == sel. */
+    memset(Tsel_x, 0, curve->fieldsize8);
+    memset(Tsel_y, 0, curve->fieldsize8);
+    memset(Tsel_z, 0, curve->fieldsize8);
+    for (uint8_t i = 0; i < 4; i++)
+    {
+      uint8_t neq = (uint8_t)(i ^ sel);
+      neq |= (uint8_t)(neq >> 1);
+      neq &= 1u;
+      uint8_t mask = (uint8_t)(neq - 1u); /* 0xFF iff i == sel */
+
+      for (size_t b = 0; b < curve->fieldsize8; b++)
+      {
+        Tsel_x[b] |= (uint8_t)(CT_x[i][b] & mask);
+        Tsel_y[b] |= (uint8_t)(CT_y[i][b] & mask);
+        Tsel_z[b] |= (uint8_t)(CT_z[i][b] & mask);
+      }
+    }
+    ZKN_CHECK(zkn_bn_init(Tsel.x, Tsel_x, curve->fieldsize8));
+    ZKN_CHECK(zkn_bn_init(Tsel.y, Tsel_y, curve->fieldsize8));
+    ZKN_CHECK(zkn_bn_init(Tsel.z, Tsel_z, curve->fieldsize8));
+
+    ZKN_CHECK(tEdwards_double(curve, R, R));
+    ZKN_CHECK(tEdwards_add(curve, R, &Tsel, R));
+
+    int iter = top - pos;
+    if (iter > 0 && (iter % CORONIZE_PERIOD) == 0)
+    {
+      ZKN_CHECK(tEdwards_Coronize(curve, R));
+    }
+  }
+  ZKN_CHECK(tEdwards_destroy(curve, &Tsel));
+
+  /* The last selected entry tells the low bit of each scalar half. */
+  explicit_bzero(Tsel_x, sizeof(Tsel_x));
+  explicit_bzero(Tsel_y, sizeof(Tsel_y));
+  explicit_bzero(Tsel_z, sizeof(Tsel_z));
+
+cleanup:
+  ZKN_CHECK(zkn_bn_destroy(&bnk1));
+  ZKN_CHECK(zkn_bn_destroy(&bnk2));
+
+  ZKN_ERROR_CLOSE();
+}
+#endif /* ZKN_LOW_RAM, no flash table */
+
 int tEdwards_fixedBase_2MSM(zkn_edcurve_t *curve, const uint8_t *k, zkn_edpoint_t *R)
 {
 
@@ -1001,10 +1145,225 @@ int tEdwards_fixedBase_2MSM(zkn_edcurve_t *curve, const uint8_t *k, zkn_edpoint_
   return tEdwards_2MSM_precomp_table(curve, T_mx, T_my, k1, 16, k2, 16, R);
 }
 
+/* Constant-time fixed-base scalar multiplication, k = 32 bytes big-endian.
+ * Standard build: four 64-bit windows over the 16-entry table.
+ * ZKN_LOW_RAM: two 128-bit windows over the 4-entry table, same result. */
+#if defined(ZKN_FIXEDBASE_FLASH_TABLE) && defined(ZKN_BN_BACKEND_SW)
+/**
+ * @brief Constant-time 4MSM over the 16-entry table, read where it lies.
+ *
+ * Same 64 double-and-add steps as tEdwards_4MSM_precomp_table and the same
+ * table (T_mx / T_my, Montgomery-affine, index (b1<<3)|(b2<<2)|(b3<<1)|b4),
+ * but no copy of it in RAM. The standard version gives each entry a fresh
+ * projective randomization and keeps the 16 randomized points on the stack
+ * (16 x 96 bytes), which a Nano S cannot hold; tEdwards_2MSM_precomp_table_ct
+ * keeps the randomization with 4 entries and pays with 128 steps instead of
+ * 64. This one keeps the 64 steps and gives up the randomization of the
+ * table:
+ *
+ *   - every step scans the 16 entries under a mask and keeps one, so neither
+ *     the addresses read nor the control flow depend on the scalar;
+ *   - the entry that comes out is a known constant. Its bytes go through the
+ *     selection and the first products of the addition unmasked. That is the
+ *     difference with the two other versions, where they are multiplied by a
+ *     secret random factor first;
+ *   - R is randomized before the first step and every CORONIZE_PERIOD steps,
+ *     so everything computed from R is blinded from the start;
+ *   - the addition is the mixed one (affine entry, Z = 1): one product less.
+ *
+ * Selected by ZKN_FIXEDBASE_FLASH_TABLE, software bignums only.
+ *
+ * k: 4 * wbytes bytes, big endian, in four windows of wbytes bytes. With
+ * wbytes = 8 they are those of the standard version: bits 0..63 weigh
+ * P1 = G, then P2 = 2^64.G, P3 = 2^128.G, P4 = 2^192.G. With wbytes = 9 the
+ * table is the one of zkn_fixedbase72_tables.c, for a blinded scalar: 72
+ * steps, the points 2^72 apart.
+ */
+static int tEdwards_4MSM_flash_table_ct(zkn_edcurve_t *curve,
+                                        const uint8_t (*T_mx)[32],
+                                        const uint8_t (*T_my)[32],
+                                        const uint8_t *k, unsigned wbytes,
+                                        zkn_edpoint_t *R)
+{
+  if (curve->fieldsize8 != 32)
+    return ZKN_NOTIMPLEMENTED;
+
+  ZKN_ERROR_INIT();
+
+  uint8_t Tsel_x[32] = {0}, Tsel_y[32] = {0}, one_y[32];
+  zkn_edpoint_t Tsel;
+  const int CORONIZE_PERIOD = 16;
+
+  /* y of the neutral element, for index 0 (its x is zero). */
+  ZKN_CHECK(zkn_bn_export(curve->mont_One, one_y, 32));
+  ZKN_CHECK(tEdwards_alloc(curve, &Tsel));
+  ZKN_CHECK(zkn_bn_copy(Tsel.z, curve->mont_One));
+
+  /* R = neutral under a random Z: (0 : l : l). */
+  ZKN_CHECK(tEdwards_SetNeutral(curve, R));
+  ZKN_CHECK(tEdwards_Coronize(curve, R));
+
+  const int top = (int)(wbytes << 3) - 1;
+  for (int pos = top; pos >= 0; pos--)
+  {
+    /* One bit of each window; the positions are public. */
+    const unsigned byte = (wbytes - 1u) - ((unsigned)pos >> 3);
+    const unsigned shift = (unsigned)pos & 7u;
+    const uint8_t sel = (uint8_t)((((k[3u * wbytes + byte] >> shift) & 1u) << 3) |
+                                  (((k[2u * wbytes + byte] >> shift) & 1u) << 2) |
+                                  (((k[wbytes + byte] >> shift) & 1u) << 1) |
+                                  ((k[byte] >> shift) & 1u));
+
+    /* Oblivious lookup: every entry is read, the one with i == sel is kept. */
+    for (uint8_t i = 0; i < 16; i++)
+    {
+      uint8_t neq = (uint8_t)(i ^ sel);
+      neq |= (uint8_t)(neq >> 2);
+      neq |= (uint8_t)(neq >> 1);
+      neq &= 1u;
+      const uint8_t mask = (uint8_t)(neq - 1u); /* 0xFF iff i == sel */
+      const uint8_t *ex = T_mx[i];
+      const uint8_t *ey = (i == 0) ? one_y : T_my[i];
+
+      for (size_t b = 0; b < 32; b++)
+      {
+        const uint8_t keep = (uint8_t)~mask;
+        Tsel_x[b] = (uint8_t)((Tsel_x[b] & keep) | (ex[b] & mask));
+        Tsel_y[b] = (uint8_t)((Tsel_y[b] & keep) | (ey[b] & mask));
+      }
+    }
+    ZKN_CHECK(zkn_bn_init(Tsel.x, Tsel_x, 32));
+    ZKN_CHECK(zkn_bn_init(Tsel.y, Tsel_y, 32));
+
+    ZKN_CHECK(tEdwards_double(curve, R, R));
+    ZKN_CHECK(tEdwards_add_affine(curve, R, &Tsel, R));
+
+    const int iter = top - pos;
+    if (iter > 0 && (iter % CORONIZE_PERIOD) == 0)
+    {
+      ZKN_CHECK(tEdwards_Coronize(curve, R));
+    }
+  }
+  ZKN_CHECK(tEdwards_destroy(curve, &Tsel));
+
+end: __attribute__((unused))
+  /* The last selected entry tells the low bit of each window. */
+  explicit_bzero(Tsel_x, sizeof(Tsel_x));
+  explicit_bzero(Tsel_y, sizeof(Tsel_y));
+  return error;
+}
+
+/* out = k + lambda * l: 36 bytes big endian from k (32 bytes big endian),
+ * lambda (32 bits) and the subgroup order l.
+ *
+ * Digits of 16 bits, so that a product and the two digits added to it fit 32
+ * bits: (2^16-1)^2 + 2*(2^16-1) = 2^32 - 1. On a Thumb-1 core each product is
+ * then one MULS. A 64-bit product would go through __aeabi_lmul, which
+ * branches on its operands, and both lambda and k are secret.
+ *
+ * The digits live in out itself: digit i is out[34 - 2i], out[35 - 2i]. */
+static void blind_scalar(const zkn_bn_t order, const uint8_t k[32], uint32_t lambda, uint8_t out[36])
+{
+  out[0] = out[1] = out[2] = out[3] = 0;
+  memcpy(out + 4, k, 32);
+
+  for (unsigned j = 0; j < 2; j++)
+  {
+    const uint32_t lj = (lambda >> (16u * j)) & 0xFFFFu;
+    uint32_t carry = 0;
+    for (unsigned i = 0; i < 16; i++)
+    {
+      const uint32_t li = (order[i >> 1] >> (16u * (i & 1u))) & 0xFFFFu;
+      uint8_t *digit = out + 34 - 2u * (i + j);
+      const uint32_t acc = li * lj + (((uint32_t)digit[0] << 8) | digit[1]) + carry;
+      digit[0] = (uint8_t)(acc >> 8);
+      digit[1] = (uint8_t)acc;
+      carry = acc >> 16;
+    }
+    /* Digit 16 + j is still zero: the sum is below 2^288. */
+    out[2 - 2u * j] = (uint8_t)(carry >> 8);
+    out[3 - 2u * j] = (uint8_t)carry;
+  }
+}
+
+int tEdwards_fixedBase_4MSM_masked(zkn_edcurve_t *curve, const uint8_t *k, uint32_t lambda, zkn_edpoint_t *R)
+{
+  const uint8_t (*T_mx)[32];
+  const uint8_t (*T_my)[32];
+  uint8_t kb[36];
+  int error;
+
+  if (curve->curveID == _BABYJUJUB_ID)
+  {
+    bbjj_get_4msm72_table(&T_mx, &T_my);
+  }
+  else if (curve->curveID == _BANDERSNATCH_ID)
+  {
+    bandersnatch_get_4msm72_table(&T_mx, &T_my);
+  }
+  else
+  {
+    return ZKN_NOTIMPLEMENTED;
+  }
+
+  blind_scalar(curve->order, k, lambda, kb);
+  error = tEdwards_4MSM_flash_table_ct(curve, T_mx, T_my, kb, 9, R);
+  explicit_bzero(kb, sizeof(kb));
+  return error;
+}
+
+int tEdwards_fixedBase_4MSM_blind(zkn_edcurve_t *curve, const uint8_t *k, zkn_edpoint_t *R)
+{
+  uint8_t rnd[4];
+  uint32_t lambda;
+  int error;
+
+  zkn_trng_get_random_data(rnd, sizeof(rnd));
+  lambda = ((uint32_t)rnd[0] << 24) | ((uint32_t)rnd[1] << 16) | ((uint32_t)rnd[2] << 8) | rnd[3];
+  error = tEdwards_fixedBase_4MSM_masked(curve, k, lambda, R);
+  explicit_bzero(rnd, sizeof(rnd));
+  lambda = 0;
+  (void)lambda;
+  return error;
+}
+#endif /* ZKN_FIXEDBASE_FLASH_TABLE && ZKN_BN_BACKEND_SW */
+
 int tEdwards_fixedBase_4MSM(zkn_edcurve_t *curve, const uint8_t *k, zkn_edpoint_t *R)
 {
   const uint8_t (*T_mx)[32];
   const uint8_t (*T_my)[32];
+#if defined(ZKN_FIXEDBASE_FLASH_TABLE) && defined(ZKN_BN_BACKEND_SW)
+  if (curve->curveID == _BABYJUJUB_ID)
+  {
+    bbjj_get_4msm_table(&T_mx, &T_my);
+  }
+  else if (curve->curveID == _BANDERSNATCH_ID)
+  {
+    bandersnatch_get_4msm_table(&T_mx, &T_my);
+  }
+  else
+  {
+    return ZKN_NOTIMPLEMENTED;
+  }
+
+  return tEdwards_4MSM_flash_table_ct(curve, T_mx, T_my, k, 8, R);
+#elif defined(ZKN_LOW_RAM)
+  if (curve->curveID == _BABYJUJUB_ID)
+  {
+    bbjj_get_2msm_table(&T_mx, &T_my);
+  }
+  else if (curve->curveID == _BANDERSNATCH_ID)
+  {
+    bandersnatch_get_2msm_table(&T_mx, &T_my);
+  }
+  else
+  {
+    return ZKN_NOTIMPLEMENTED;
+  }
+
+  /* k1 = low 128 bits (weights P1 = G), k2 = high 128 bits (P2 = 2^128.G) */
+  return tEdwards_2MSM_precomp_table_ct(curve, T_mx, T_my, k + 16, 16, k, 16, R);
+#else
   if (curve->curveID == _BABYJUJUB_ID)
   {
     bbjj_get_4msm_table(&T_mx, &T_my);
@@ -1024,6 +1383,7 @@ int tEdwards_fixedBase_4MSM(zkn_edcurve_t *curve, const uint8_t *k, zkn_edpoint_
   const uint8_t *k4 = k + 0;
 
   return tEdwards_4MSM_precomp_table(curve, T_mx, T_my, k1, 8, k2, 8, k3, 8, k4, 8, R);
+#endif /* ZKN_LOW_RAM */
 }
 
 // RFC8032 packpoint: y |=(x&1)<<255, LE representation

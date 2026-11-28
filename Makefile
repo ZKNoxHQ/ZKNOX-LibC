@@ -30,6 +30,7 @@ WITH_MPT   ?= 1
 DEBUG      ?= 0
 ZKNOX_DEBUG ?= 0    # 1 → compile ZKNOX_DEBUG-only code (VSS Feldman helpers, DKG)
 ZKN_FROST   ?= 0    # 1 → compile the threshold layer (frost, vss helpers, vartime scalarMul)
+ZKN_LOW_RAM ?= 0    # 1 → the low-RAM profile (src/common/zkn_config.h): phased signing and threshold paths, compact BLAKE-512 and mod_mul, fixed-base table read from flash, blinded key scalar
 
 # ── Toolchain ─────────────────────────────────────────────────────────
 CC      ?= cc
@@ -60,6 +61,42 @@ ifeq ($(ZKN_FROST),1)
 endif
 ifeq ($(ZKNOX_DEBUG),1)
   CFLAGS += -DZKNOX_DEBUG
+endif
+ifeq ($(ZKN_LOW_RAM),1)
+  CFLAGS += -DZKN_LOW_RAM
+endif
+
+# Fixed-base multiplication over the 16-entry table read from flash, without
+# the randomized copy in RAM (see tEdwards_4MSM_flash_table_ct). Part of the
+# low-RAM profile, and an option of its own:
+#   unset  follows ZKN_LOW_RAM
+#   1      on, with or without ZKN_LOW_RAM
+#   0      off, with ZKN_LOW_RAM too: two windows and a randomized table in
+#          RAM, the fixed-base multiplication the cx backend runs on Nano S
+ZKN_FIXEDBASE_FLASH_TABLE ?=
+ifeq ($(ZKN_FIXEDBASE_FLASH_TABLE),1)
+  CFLAGS += -DZKN_FIXEDBASE_FLASH_TABLE
+endif
+ifeq ($(ZKN_FIXEDBASE_FLASH_TABLE),0)
+  CFLAGS += -DZKN_FIXEDBASE_NO_FLASH_TABLE
+endif
+
+# zkn_prv2pub blinds the private scalar with a random multiple of the subgroup
+# order (tEdwards_fixedBase_4MSM_blind). Needs the flash table. Same three
+# values: unset follows ZKN_LOW_RAM, 1 on, 0 off.
+ZKN_FIXEDBASE_SCALAR_BLINDING ?=
+ifeq ($(ZKN_FIXEDBASE_SCALAR_BLINDING),1)
+  CFLAGS += -DZKN_FIXEDBASE_SCALAR_BLINDING
+endif
+ifeq ($(ZKN_FIXEDBASE_SCALAR_BLINDING),0)
+  CFLAGS += -DZKN_FIXEDBASE_NO_SCALAR_BLINDING
+endif
+
+# Configuration header of the application that embeds the library, included
+# first by src/common/zkn_config.h. Empty: the defaults of the library.
+ZKN_CONFIG_FILE ?=
+ifneq ($(strip $(ZKN_CONFIG_FILE)),)
+  CFLAGS += -DZKN_CONFIG_FILE='"$(abspath $(ZKN_CONFIG_FILE))"'
 endif
 
 # Position-independent code for the .so build
@@ -95,7 +132,7 @@ SRCS_SW_CRYPTO := src/sw_crypto/zkn_sha256_sw.c   \
                   src/sw_crypto/zkn_ed25519_sw.c  \
                   src/sw_crypto/zkn_aes_gcm_sw.c
 SRCS_KEYS_SW   := src/keys/zkn_ed25519_ecdh_sw.c
-SRCS_AES_SW    := src/aes/zkn_aes_gcm_sw_backend.c
+SRCS_AES_SW    := src/aes/zkn_aes_gcm_sw_backend.c src/aes/zkn_gcm_ct.c
 SRCS_KEYS_CX   := src/keys/zkn_ed25519_ecdh.c
 SRCS_AES_CX    := src/aes/zkn_aes_gcm.c src/aes/zkn_aes_ctr.c
 

@@ -276,6 +276,25 @@ int zkn_bn_reduce(zkn_bn_t r, const zkn_bn_t value, const zkn_bn_t modulus)
     return ZKN_OK;
 }
 
+#if defined(ZKN_LOW_RAM)
+int zkn_bn_mod_mul(zkn_bn_t r, const zkn_bn_t a,
+                   const zkn_bn_t b, const zkn_bn_t modulus)
+{
+    /* Low-RAM variant, same canonical result for every a, b < 2^256:
+     *   t = a · R^2 · R^-1 = a·R mod n        (t < n)
+     *   r = t · b · R^-1   = a·b mod n
+     * Two Montgomery products instead of two conversions in, a product and a
+     * conversion out; the context is built in place, without the copy that
+     * zkn_mont_init makes. Half the stack depth of the standard version.
+     * zkn_mul_mont_256 writes r last, so r may alias a or b. */
+    zkn_mont_ctx256_t ctx;
+    zkn_bn_t t;
+    zkn_mont_ctx_init(&ctx, modulus);
+    zkn_mul_mont_256(t, a, ctx.R2, ctx.p, ctx.n0);
+    zkn_mul_mont_256(r, t, b, ctx.p, ctx.n0);
+    return ZKN_OK;
+}
+#else
 int zkn_bn_mod_mul(zkn_bn_t r, const zkn_bn_t a,
                    const zkn_bn_t b, const zkn_bn_t modulus)
 {
@@ -295,6 +314,7 @@ int zkn_bn_mod_mul(zkn_bn_t r, const zkn_bn_t a,
     zkn_mont_from_montgomery(r, rm, &ctx);
     return ZKN_OK;
 }
+#endif /* ZKN_LOW_RAM */
 
 int zkn_bn_mod_invert_nprime(zkn_bn_t r, const zkn_bn_t a, const zkn_bn_t n)
 {

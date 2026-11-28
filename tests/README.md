@@ -28,13 +28,33 @@ against `build/libzknox.a` via `make test`.
 | Test                | Tests | Origin | Notes |
 | ------------------- | ----- | ------ | ----- |
 | `test_poseidon_soft`|   27  | sources.zip, unchanged | API unchanged between branches |
+| `test_poseidon_arities`| 14 | known answers from poseidon-lite | Poseidon-1 .. Poseidon-7 through `zkn_poseidon_hash`: each arity has its own table |
+| `test_poseidon_opt` | 25 | known answers from the reference rounds of `tools/gen_poseidon_opt.py --kat` | initState and all t outputs over BN254, Poseidon-5 over BLS12-381 Fr (Bandersnatch), context reuse, what `zkn_poseidon_init` refuses |
 | `test_poseidon`     |   11  | rewritten for zknox_1905 | New `Poseidon_alloc_init/Poseidon` API |
 | `test_rfc9591frost` |   23  | written from scratch   | Tests `Babyfrost_H1/H3/H4/H5/H6` (domain separation, determinism) |
 | `test_vss`          |   20  | written from scratch   | Tests `makeDealerCoeffsDeterministic`; full VSS pending (only 1 of 7 functions implemented in `zkn_vss.c`) |
 
-**Subtotal: 81/81 passing.**
+**Subtotal: 106/106 passing.**
 
-### Total: 432 tests passing.
+### Total: 457 tests passing.
+
+### Poseidon against circomlibjs (`make poseidon-diff`)
+
+Not part of `make test` (needs node, and `npm install` in `js/`).
+`js/poseidon_diff.mjs` draws vectors from the OS CSPRNG, hashes them with the
+library through `tests/poseidon_cli.c` and compares every output:
+
+* BN254, Poseidon-1 .. Poseidon-7: 10000 vectors per arity against
+  circomlibjs `buildPoseidon` (wasm) and `buildPoseidonReference`, then 1000
+  with a random initState, all t outputs and inputs above p;
+* BLS12-381 Fr, Poseidon-5: the same batches against the reference rounds in
+  BigInt with the circomlibjs constants (circomlibjs is BN254 only).
+
+`make poseidon-diff POSEIDON_DIFF_ARGS="--count 1000"` for a shorter run.
+
+The default tables have no sparse round (see `tools/gen_poseidon_opt.py
+--sparse`), so neither `make test` nor this target runs the sparse linear
+layer. After regenerating the tables with sparse rounds, run both.
 
 ## Note on `test_miller_384`
 

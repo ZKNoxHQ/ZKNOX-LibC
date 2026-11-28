@@ -57,3 +57,12 @@ $(BIN)/%: tests/%.c $(BUILD)/libzknox.a
 	@mkdir -p $(BIN)
 	@echo "  CC   $@"
 	@$(CC) $(CFLAGS) -DZKN_HOST_TESTS $< $(BUILD)/libzknox.a -o $@
+
+# Differential test of Poseidon against circomlibjs on random vectors
+# (js/poseidon_diff.mjs, 10000 per arity by default). Needs node and
+# `npm install` in js/, hence not part of `make test`.
+#   make poseidon-diff
+#   make poseidon-diff POSEIDON_DIFF_ARGS="--count 1000"
+.PHONY: poseidon-diff
+poseidon-diff: $(BIN)/poseidon_cli
+	@node js/poseidon_diff.mjs --cli $(BIN)/poseidon_cli $(POSEIDON_DIFF_ARGS)
